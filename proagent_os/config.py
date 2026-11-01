@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     kb_embed_base_url: str = ""
     kb_embed_api_key: str = ""
     kb_hybrid_alpha: float = Field(default=0.5, ge=0.0, le=1.0)
+    # blob: float32 rows in kb_chunk_embeddings, cosine in Python.
+    # sqlite_vec: optional vec0 index (the vec extra). BM25 does not read this.
+    kb_vector_store: Literal["blob", "sqlite_vec"] = "blob"
 
     # In-process fixed window per tenant (admin and anonymous are separate buckets).
     # Not shared across processes and not a Redis quota. Restart clears the counters.
@@ -53,7 +56,13 @@ class Settings(BaseSettings):
     rate_limit_requests: int = Field(default=120, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
 
-    @field_validator("kb_retrieval", "kb_embed_backend", "executor_mode", mode="before")
+    @field_validator(
+        "kb_retrieval",
+        "kb_embed_backend",
+        "kb_vector_store",
+        "executor_mode",
+        mode="before",
+    )
     @classmethod
     def _normalize_choice(cls, value: object) -> object:
         if isinstance(value, str):

@@ -10,11 +10,12 @@ from proagent_os.professional.kb.chunking import chunk_text
 from proagent_os.professional.kb.embeddings import EmbeddingsError, get_embedder
 from proagent_os.professional.kb.ingest import fetch_url_text, read_local_file
 from proagent_os.professional.kb.retrieve import (
-    pack_embedding,
     rank_chunks,
     rank_chunks_with_embeddings,
+    rank_chunks_with_similarities,
     unpack_embedding,
 )
+from proagent_os.professional.kb.vector_store import get_vector_store
 
 
 class KnowledgeBase:
@@ -28,8 +29,12 @@ class KnowledgeBase:
         vectors = None
         model = ""
         dims = 0
-        if get_settings().kb_retrieval != "bm25" and chunks:
+        settings = get_settings()
+        if settings.kb_retrieval != "bm25" and chunks:
             embedder = get_embedder()
+            # A missing sqlite-vec extension fails here, before any insert and
+            # before a remote embeddings call. BM25 does not enter this branch.
+            get_vector_store(settings).ensure_available(self.db)
             vectors = embedder.embed_texts(chunks)
             if len(vectors) != len(chunks):
                 raise EmbeddingsError(
@@ -99,6 +104,7 @@ class KnowledgeBase:
         else:
             chunks = self.db.fetchall("SELECT id, tenant_id, content FROM kb_chunks")
         embedder = get_embedder()
+        get_vector_store().ensure_available(self.db)
         vectors = embedder.embed_texts([ch["content"] for ch in chunks]) if chunks else []
         if len(vectors) != len(chunks):
             raise EmbeddingsError(
@@ -138,30 +144,64 @@ class KnowledgeBase:
         """Hybrid or vector rank. Incomplete embeddings fall back to BM25.
 
         A configured openai backend is resolved first, so a missing key or
-        base URL raises instead of searching with the stub.
+        base URL raises instead of searching with the stub. The blob store
+        still loads every embedding and scores cosine in Python. Any other
+        store (sqlite-vec, or a test double) must already have loaded; a
+        missing extension raises and does not fall back to blob cosine.
         """
         embedder = get_embedder()
         if not chunks:
             return []
         settings = get_settings()
-        vectors = self._aligned_vectors(
+        store = get_vector_store(settings)
+        if store.kind == "blob":
+            vectors = self._aligned_vectors(
+                tenant_id,
+                chunks,
+                dims=embedder.dims,
+                model=embedder.model,
+            )
+            if vectors is None:
+                return rank_chunks(query, chunks, top_k=top_k)
+            query_vec = embedder.embed_texts([query])[0]
+            return rank_chunks_with_embeddings(
+                query,
+                chunks,
+                vectors,
+                mode=settings.kb_retrieval,
+                alpha=float(settings.kb_hybrid_alpha),
+                top_k=top_k,
+                dims=embedder.dims,
+                query_embedding=query_vec,
+            )
+        store.ensure_available(self.db)
+        chunk_ids = [chunk["id"] for chunk in chunks]
+        if not store.covers(
+            self.db,
             tenant_id,
-            chunks,
+            chunk_ids,
             dims=embedder.dims,
             model=embedder.model,
-        )
-        if vectors is None:
+        ):
             return rank_chunks(query, chunks, top_k=top_k)
         query_vec = embedder.embed_texts([query])[0]
-        return rank_chunks_with_embeddings(
+        similarities = store.similarities(
+            self.db,
+            tenant_id,
+            chunk_ids,
+            query_vec,
+            dims=embedder.dims,
+            model=embedder.model,
+            mode=settings.kb_retrieval,
+            top_k=top_k,
+        )
+        return rank_chunks_with_similarities(
             query,
             chunks,
-            vectors,
+            similarities,
             mode=settings.kb_retrieval,
             alpha=float(settings.kb_hybrid_alpha),
             top_k=top_k,
-            dims=embedder.dims,
-            query_embedding=query_vec,
         )
 
     def _aligned_vectors(
@@ -208,20 +248,14 @@ class KnowledgeBase:
             raise EmbeddingsError(
                 f"embedding width {len(vec)} does not match PROAGENT_KB_EMBED_DIMS={dims}"
             )
-        blob = pack_embedding(vec)
-        with self.db.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO kb_chunk_embeddings (chunk_id, tenant_id, dims, embedding, model)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(chunk_id) DO UPDATE SET
-                    tenant_id=excluded.tenant_id,
-                    dims=excluded.dims,
-                    embedding=excluded.embedding,
-                    model=excluded.model
-                """,
-                (chunk_id, tenant_id, dims, blob, model),
-            )
+        get_vector_store().upsert(
+            self.db,
+            chunk_id,
+            tenant_id,
+            vec,
+            dims=dims,
+            model=model,
+        )
 
 
 def _hit(chunk: Dict[str, Any], score: float) -> Dict[str, Any]:

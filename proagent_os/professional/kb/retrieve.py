@@ -146,6 +146,36 @@ def rank_chunks(query: str, chunks: Sequence[Dict], top_k: int = 5) -> List[Tupl
     return [(c, s) for c, s in ranked[:top_k] if s > 0]
 
 
+def rank_chunks_with_similarities(
+    query: str,
+    chunks: Sequence[Dict],
+    similarities: Sequence[float],
+    *,
+    mode: str = "hybrid",
+    alpha: float = 0.5,
+    top_k: int = 5,
+) -> List[Tuple[Dict, float]]:
+    """Rank by precomputed cosine similarities.
+
+    ``mode='bm25'`` or a length mismatch delegates to :func:`rank_chunks`.
+    ``vector`` uses the similarities as scores. ``hybrid`` fuses them with
+    BM25 through :func:`hybrid_scores`.
+    """
+    if mode == "bm25" or len(chunks) != len(similarities):
+        return rank_chunks(query, chunks, top_k=top_k)
+    if mode == "vector":
+        scores = [float(value) for value in similarities]
+    else:
+        docs = [chunk.get("content", "") for chunk in chunks]
+        scores = hybrid_scores(
+            bm25_scores(query, docs),
+            [float(value) for value in similarities],
+            alpha=alpha,
+        )
+    ranked = sorted(zip(chunks, scores), key=lambda pair: pair[1], reverse=True)
+    return [(chunk, score) for chunk, score in ranked[:top_k] if score > 0]
+
+
 def rank_chunks_with_embeddings(
     query: str,
     chunks: Sequence[Dict],
@@ -169,11 +199,12 @@ def rank_chunks_with_embeddings(
         query_vec = embedding_stub(query, dims=dims)
     else:
         query_vec = [float(value) for value in query_embedding]
-    vector_scores = [cosine_similarity(query_vec, emb) for emb in embeddings]
-    if mode == "vector":
-        scores = vector_scores
-    else:
-        docs = [c.get("content", "") for c in chunks]
-        scores = hybrid_scores(bm25_scores(query, docs), vector_scores, alpha=alpha)
-    ranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
-    return [(c, s) for c, s in ranked[:top_k] if s > 0]
+    similarities = [cosine_similarity(query_vec, emb) for emb in embeddings]
+    return rank_chunks_with_similarities(
+        query,
+        chunks,
+        similarities,
+        mode=mode,
+        alpha=alpha,
+        top_k=top_k,
+    )

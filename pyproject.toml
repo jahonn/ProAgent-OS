@@ -22,15 +22,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
-# Reserved for a later sqlite-vec index. The openai embeddings backend uses
-# httpx and does not import this extra. pgvector is not a dependency.
-vec = ["sqlite-vec"]
+# Optional sqlite-vec vec0 index. Imported only when
+# PROAGENT_KB_VECTOR_STORE=sqlite_vec. BM25 and the default blob store do not
+# import it. pgvector is not a dependency.
+vec = ["sqlite-vec>=0.1.9"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "sqlite_vec: needs the optional sqlite-vec extension (skipped when it cannot load)",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
