@@ -22,6 +22,8 @@ Versions are the ordered steps in `proagent_os/migrations.py`. Each step is SQL,
 
 `0003_usage_events` adds the usage-metering stub table `usage_events` (`tenant_id`, `kind`, `quantity`, `created_at`) and `idx_usage_events_tenant_kind`. Kinds are `llm_tokens`, `kb_search`, and `recommendation_execute`. The table is a local counter. It is not a payment ledger, and this migration does not import OpenTelemetry.
 
+`0004_tenant_role_overrides` adds `tenant_role_overrides` (`tenant_id`, `role`, `updated_at`). `role` is `tenant_operator` or `tenant_readonly`. It records an API-key role for one tenant. An empty table means every tenant key is `tenant_operator`. The admin key is not a row in this table. See [AUTH.md](AUTH.md).
+
 A partial file (for example a `tenants` table from before `key_status` existed, without the rest of the baseline tables) is not stamped. Version 1 creates the missing tables and adds `key_status` when that column is absent.
 
 sqlite-vec virtual tables (`kb_vec_index`, `kb_vec_d*`) are not part of these migrations. The vector store creates them when `PROAGENT_KB_VECTOR_STORE=sqlite_vec` and the `vec` extra is installed. Migrating does not import `sqlite_vec`.

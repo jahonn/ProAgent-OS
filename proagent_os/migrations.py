@@ -134,10 +134,27 @@ def _migration_0003_usage_events(conn: sqlite3.Connection) -> None:
     _exec_script(conn, _USAGE_EVENTS_SQL)
 
 
+# API-key role overrides. Not an IdP directory. ``admin`` is not a stored value;
+# the application rejects it as well as the CHECK below.
+_TENANT_ROLE_OVERRIDES_SQL = """
+CREATE TABLE IF NOT EXISTS tenant_role_overrides (
+    tenant_id TEXT PRIMARY KEY,
+    role TEXT NOT NULL CHECK (role IN ('tenant_operator', 'tenant_readonly')),
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+"""
+
+
+def _migration_0004_tenant_role_overrides(conn: sqlite3.Connection) -> None:
+    _exec_script(conn, _TENANT_ROLE_OVERRIDES_SQL)
+
+
 MIGRATIONS: List[Migration] = [
     Migration(1, "0001_baseline", _migration_0001_baseline),
     Migration(2, "0002_tenant_list_indexes", _migration_0002_tenant_list_indexes),
     Migration(3, "0003_usage_events", _migration_0003_usage_events),
+    Migration(4, "0004_tenant_role_overrides", _migration_0004_tenant_role_overrides),
 ]
 
 

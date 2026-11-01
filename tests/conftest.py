@@ -14,6 +14,10 @@ def _isolate_db(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("PROAGENT_DB_PATH", str(db_path))
     monkeypatch.setenv("PROAGENT_ADMIN_KEY", "test-admin-key")
+    monkeypatch.setenv("PROAGENT_AUTH_MODE", "api_key")
+    monkeypatch.setenv("PROAGENT_OIDC_ISSUER", "")
+    monkeypatch.setenv("PROAGENT_OIDC_AUDIENCE", "")
+    monkeypatch.setenv("PROAGENT_OIDC_CLIENT_ID", "")
     monkeypatch.setenv("PROAGENT_LLM_PROVIDER", "mock")
     # Default executor is noop: CI stays offline and approval still records execution.
     monkeypatch.setenv("PROAGENT_EXECUTOR_MODE", "noop")
@@ -56,9 +60,11 @@ def _isolate_db(tmp_path, monkeypatch):
     from proagent_os.db import reset_db
     from proagent_os.llm.factory import reset_llm_cache
     from proagent_os.observability import reset_observability
+    from proagent_os.oidc import reset_token_verifier
     from proagent_os.services import reset_services
 
     get_settings.cache_clear()
+    reset_token_verifier()
     reset_observability()
     reset_llm_cache()
     reset_db(db_path)
@@ -67,5 +73,6 @@ def _isolate_db(tmp_path, monkeypatch):
 
     reset_rate_limiter()
     yield
+    reset_token_verifier()
     get_settings.cache_clear()
     reset_llm_cache()

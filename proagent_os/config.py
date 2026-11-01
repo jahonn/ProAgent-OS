@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PROAGENT_", env_file=".env", extra="ignore")
 
     admin_key: str = "dev-admin-key"
+    # api_key: admin key + tenant API keys. oidc: sketch, no IdP call.
+    # See proagent_os.oidc and docs/AUTH.md.
+    auth_mode: Literal["api_key", "oidc"] = "api_key"
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_client_id: str = ""
     db_path: str = "./data/proagent.db"
     llm_provider: str = "mock"  # mock | openai
     llm_base_url: str = "https://api.openai.com/v1"
@@ -71,12 +77,20 @@ class Settings(BaseSettings):
         "kb_vector_store",
         "executor_mode",
         "otel_exporter",
+        "auth_mode",
         mode="before",
     )
     @classmethod
     def _normalize_choice(cls, value: object) -> object:
         if isinstance(value, str):
             return value.strip().lower()
+        return value
+
+    @field_validator("oidc_issuer", "oidc_audience", "oidc_client_id", mode="before")
+    @classmethod
+    def _strip_oidc(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
         return value
 
     @property

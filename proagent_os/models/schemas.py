@@ -39,6 +39,10 @@ class ApiKeyRotateOut(BaseModel):
     detail: str
 
 
+class TenantRoleUpdate(BaseModel):
+    role: Literal["tenant_operator", "tenant_readonly"]
+
+
 class ApiKeyRevokeOut(BaseModel):
     tenant_id: str
     revoked: bool = True
