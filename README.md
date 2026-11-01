@@ -174,30 +174,48 @@ docker compose up --build
 | `PROAGENT_EXECUTOR_WEBHOOK_TIMEOUT_S` | `5` | Webhook timeout in seconds |
 | `PROAGENT_EXECUTOR_WEBHOOK_TOKEN` | empty | Optional Bearer token for the webhook |
 | `PROAGENT_KB_RETRIEVAL` | `bm25` | `bm25`, `hybrid`, or `vector` |
-| `PROAGENT_KB_EMBED_BACKEND` | `stub` | Offline hash-bag embedder (only backend in this release) |
-| `PROAGENT_KB_EMBED_DIMS` | `64` | Stub embedding width |
+| `PROAGENT_KB_EMBED_BACKEND` | `stub` | `stub` (offline hash-bag) or `openai` (`POST /v1/embeddings`) |
+| `PROAGENT_KB_EMBED_DIMS` | `64` | Vector width, 1–4096. Sent as `dimensions` for `openai` |
+| `PROAGENT_KB_EMBED_MODEL` | `text-embedding-3-small` | Model id for `openai`. Ignored by `stub` |
+| `PROAGENT_KB_EMBED_BASE_URL` | empty | Embeddings `/v1` root. Empty uses `PROAGENT_LLM_BASE_URL` |
+| `PROAGENT_KB_EMBED_API_KEY` | empty | Bearer token. Empty uses `PROAGENT_LLM_API_KEY` |
 | `PROAGENT_KB_HYBRID_ALPHA` | `0.5` | Hybrid mix: `α * norm(vector) + (1 - α) * norm(BM25)` |
 | `PROAGENT_SKILLS_DIRS` | `./skills,./verticals/example/skills,./verticals/support_desk/skills` | Skill pack roots |
 | `PROAGENT_AGENTS_CONFIG` | `./config/agents.yaml` | Core agent registry |
 
 ## Retrieval modes
 
-Search defaults to offline BM25. That path does not write embeddings and does not need extra packages, which is what CI runs.
+Search defaults to offline BM25. That path does not write embeddings and does not call an embeddings API. CI runs this path with `PROAGENT_LLM_PROVIDER=mock` and `PROAGENT_KB_EMBED_BACKEND=stub`.
 
 | Mode | Behavior |
 |------|----------|
-| `bm25` | Lexical BM25 only. |
+| `bm25` | Lexical BM25 only. Does not call the embeddings backend. |
 | `hybrid` | `α * norm(cosine) + (1 - α) * norm(BM25)`. Each signal is divided by its max over the candidate set (non-positive values contribute 0). |
 | `vector` | Cosine similarity on stored embeddings. |
 
-`PROAGENT_KB_EMBED_BACKEND=stub` is a pure-Python hash-bag, not a semantic model. `hybrid` and `vector` store vectors in `kb_chunk_embeddings` on ingest. If any chunk is missing an embedding, or the stored width does not match `PROAGENT_KB_EMBED_DIMS`, search uses BM25 instead of failing. `KnowledgeBase.reindex_embeddings()` backfills vectors and is safe to repeat. The mode is process-wide via the environment, not a field on `POST /api/v1/kb/search`.
+`stub` (the default) is a pure-Python hash-bag, not a semantic model. `openai` POSTs to `{base}/embeddings` on an OpenAI-compatible `/v1` root. The base URL and API key come from `PROAGENT_KB_EMBED_BASE_URL` and `PROAGENT_KB_EMBED_API_KEY` when those are set, and otherwise from `PROAGENT_LLM_BASE_URL` and `PROAGENT_LLM_API_KEY`. The JSON body sends `model` (`PROAGENT_KB_EMBED_MODEL`) and `dimensions` (`PROAGENT_KB_EMBED_DIMS`). `text-embedding-3-*` accepts `dimensions`; set the width to a size that model allows (1536 is the native width of `text-embedding-3-small`). The call times out after 90 seconds. The error text for a failed call does not include the API key.
 
-sqlite-vec, pgvector, and remote embedding providers are not wired yet. The optional `vec` extra (`sqlite-vec`) is only a placeholder for that follow-up.
+`hybrid` and `vector` store vectors in `kb_chunk_embeddings` on ingest. The `model` column is `stub`, or the configured embeddings model id. If any chunk is missing a vector, the stored width does not match `PROAGENT_KB_EMBED_DIMS`, or the stored model label does not match the active embedder, search uses BM25. `KnowledgeBase.reindex_embeddings()` rewrites the rows and is safe to repeat. Run it after changing the backend, model, or dimensions.
+
+A missing key, a missing base URL, or a failed embeddings call raises `EmbeddingsConfigError` or `EmbeddingsError`. The openai backend does not silently switch to the stub. `POST /api/v1/kb/ingest/*` and `POST /api/v1/kb/search` return HTTP 503 with that message. BM25 keeps working if you leave the backend on `openai` and only switch `PROAGENT_KB_RETRIEVAL` back. The mode is process-wide via the environment, not a field on `POST /api/v1/kb/search`.
+
+sqlite-vec is not wired. The optional `vec` extra remains a placeholder for that index. pgvector is not wired; a Postgres vector store would be a separate option.
 
 ```bash
-export PROAGENT_KB_RETRIEVAL=hybrid
+# Offline default (CI and the mock demo)
+export PROAGENT_KB_RETRIEVAL=bm25
 export PROAGENT_KB_EMBED_BACKEND=stub
-export PROAGENT_KB_EMBED_DIMS=64
+
+# Hybrid search against an OpenAI-compatible embeddings API
+export PROAGENT_KB_RETRIEVAL=hybrid
+export PROAGENT_KB_EMBED_BACKEND=openai
+export PROAGENT_KB_EMBED_MODEL=text-embedding-3-small
+export PROAGENT_KB_EMBED_DIMS=1536
+export PROAGENT_LLM_BASE_URL=https://api.openai.com/v1
+export PROAGENT_LLM_API_KEY=sk-...
+# Optional dedicated endpoint. When unset, the LLM base URL and API key are used.
+# export PROAGENT_KB_EMBED_BASE_URL=https://api.openai.com/v1
+# export PROAGENT_KB_EMBED_API_KEY=sk-...
 export PROAGENT_KB_HYBRID_ALPHA=0.5
 ```
 
@@ -274,7 +292,7 @@ Commercial-readiness work and the path toward a more discoverable project are tr
 
 Known gaps in this tree:
 
-- Production vector search (sqlite-vec / pgvector) and remote embedding providers. Offline hybrid retrieval with the pure-Python stub is available via `PROAGENT_KB_RETRIEVAL=hybrid`; the default remains BM25.
+- Production vector indexes are still open. sqlite-vec is not imported (the `vec` extra is a placeholder) and pgvector is not wired. Remote embeddings are available with `PROAGENT_KB_EMBED_BACKEND=openai`. Default search remains BM25 on the offline stub.
 - OAuth / SSO, RBAC, and a shared quota service. Recommendation decisions write `recommendation_audit`. API key issue, rotate, and revoke write `tenant_api_key_audit`. `/api/v1` has an in-process rate-limit stub (no Redis).
 - Multi-node deploy, migrations, backups (beyond single SQLite)
 - Recommendation executors beyond noop and one operator-configured webhook (no per-action code, no URL taken from the action payload)

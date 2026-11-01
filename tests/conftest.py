@@ -24,7 +24,12 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_KB_RETRIEVAL", "bm25")
     monkeypatch.setenv("PROAGENT_KB_EMBED_BACKEND", "stub")
     monkeypatch.setenv("PROAGENT_KB_EMBED_DIMS", "64")
+    monkeypatch.setenv("PROAGENT_KB_EMBED_MODEL", "text-embedding-3-small")
+    monkeypatch.setenv("PROAGENT_KB_EMBED_BASE_URL", "")
+    monkeypatch.setenv("PROAGENT_KB_EMBED_API_KEY", "")
     monkeypatch.setenv("PROAGENT_KB_HYBRID_ALPHA", "0.5")
+    monkeypatch.setenv("PROAGENT_LLM_API_KEY", "")
+    monkeypatch.setenv("PROAGENT_LLM_BASE_URL", "https://api.openai.com/v1")
     # High ceiling so existing API tests do not trip the stub. Dedicated tests lower it.
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_REQUESTS", "10000")

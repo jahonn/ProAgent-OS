@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from proagent_os.config import get_settings
 from proagent_os.db import get_db, new_id, utcnow
 from proagent_os.professional.kb.chunking import chunk_text
+from proagent_os.professional.kb.embeddings import EmbeddingsError, get_embedder
 from proagent_os.professional.kb.ingest import fetch_url_text, read_local_file
 from proagent_os.professional.kb.retrieve import (
-    embedding_stub,
     pack_embedding,
     rank_chunks,
     rank_chunks_with_embeddings,
@@ -22,6 +22,21 @@ class KnowledgeBase:
         self.db = get_db()
 
     def ingest_text(self, tenant_id: str, source: str, title: str, content: str) -> Dict[str, Any]:
+        chunks = chunk_text(content)
+        # Embed before any insert so a failed request leaves the corpus unchanged.
+        # BM25 does not construct an embedder, including when the backend is openai.
+        vectors = None
+        model = ""
+        dims = 0
+        if get_settings().kb_retrieval != "bm25" and chunks:
+            embedder = get_embedder()
+            vectors = embedder.embed_texts(chunks)
+            if len(vectors) != len(chunks):
+                raise EmbeddingsError(
+                    f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
+                )
+            model = embedder.model
+            dims = embedder.dims
         doc_id = new_id("doc")
         self.db.insert(
             "kb_documents",
@@ -34,8 +49,6 @@ class KnowledgeBase:
                 "created_at": utcnow(),
             },
         )
-        chunks = chunk_text(content)
-        store_vectors = get_settings().kb_retrieval != "bm25"
         for i, ch in enumerate(chunks):
             chunk_id = new_id("chk")
             self.db.insert(
@@ -49,8 +62,8 @@ class KnowledgeBase:
                     "tokens_estimate": max(1, len(ch.split())),
                 },
             )
-            if store_vectors:
-                self._upsert_embedding(chunk_id, tenant_id, ch)
+            if vectors is not None:
+                self._write_embedding(chunk_id, tenant_id, vectors[i], dims=dims, model=model)
         return {"document_id": doc_id, "title": title, "chunks": len(chunks), "source": source}
 
     async def ingest_url(self, tenant_id: str, url: str) -> Dict[str, Any]:
@@ -77,8 +90,7 @@ class KnowledgeBase:
         return [_hit(c, score) for c, score in ranked]
 
     def reindex_embeddings(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
-        """Write stub embeddings for existing chunks. Safe to run more than once."""
-        settings = get_settings()
+        """Write embeddings for existing chunks. Safe to run more than once."""
         if tenant_id:
             chunks = self.db.fetchall(
                 "SELECT id, tenant_id, content FROM kb_chunks WHERE tenant_id=?",
@@ -86,13 +98,25 @@ class KnowledgeBase:
             )
         else:
             chunks = self.db.fetchall("SELECT id, tenant_id, content FROM kb_chunks")
-        for ch in chunks:
-            self._upsert_embedding(ch["id"], ch["tenant_id"], ch["content"])
+        embedder = get_embedder()
+        vectors = embedder.embed_texts([ch["content"] for ch in chunks]) if chunks else []
+        if len(vectors) != len(chunks):
+            raise EmbeddingsError(
+                f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
+            )
+        for ch, vec in zip(chunks, vectors, strict=True):
+            self._write_embedding(
+                ch["id"],
+                ch["tenant_id"],
+                vec,
+                dims=embedder.dims,
+                model=embedder.model,
+            )
         return {
             "chunks": len(chunks),
             "upserted": len(chunks),
-            "dims": int(settings.kb_embed_dims),
-            "model": settings.kb_embed_backend,
+            "dims": embedder.dims,
+            "model": embedder.model,
         }
 
     def _load_chunks(self, tenant_id: str) -> List[Dict[str, Any]]:
@@ -111,13 +135,24 @@ class KnowledgeBase:
         *,
         top_k: int,
     ) -> List[Tuple[Dict[str, Any], float]]:
-        """Hybrid or vector rank. Incomplete embeddings fall back to BM25."""
+        """Hybrid or vector rank. Incomplete embeddings fall back to BM25.
+
+        A configured openai backend is resolved first, so a missing key or
+        base URL raises instead of searching with the stub.
+        """
+        embedder = get_embedder()
         if not chunks:
             return []
         settings = get_settings()
-        vectors = self._aligned_vectors(tenant_id, chunks, dims=int(settings.kb_embed_dims))
+        vectors = self._aligned_vectors(
+            tenant_id,
+            chunks,
+            dims=embedder.dims,
+            model=embedder.model,
+        )
         if vectors is None:
             return rank_chunks(query, chunks, top_k=top_k)
+        query_vec = embedder.embed_texts([query])[0]
         return rank_chunks_with_embeddings(
             query,
             chunks,
@@ -125,7 +160,8 @@ class KnowledgeBase:
             mode=settings.kb_retrieval,
             alpha=float(settings.kb_hybrid_alpha),
             top_k=top_k,
-            dims=int(settings.kb_embed_dims),
+            dims=embedder.dims,
+            query_embedding=query_vec,
         )
 
     def _aligned_vectors(
@@ -134,9 +170,10 @@ class KnowledgeBase:
         chunks: Sequence[Dict[str, Any]],
         *,
         dims: int,
+        model: str,
     ) -> Optional[List[List[float]]]:
         rows = self.db.fetchall(
-            "SELECT chunk_id, dims, embedding FROM kb_chunk_embeddings WHERE tenant_id=?",
+            "SELECT chunk_id, dims, embedding, model FROM kb_chunk_embeddings WHERE tenant_id=?",
             (tenant_id,),
         )
         by_id = {row["chunk_id"]: row for row in rows}
@@ -144,7 +181,7 @@ class KnowledgeBase:
         width = dims * 4
         for chunk in chunks:
             row = by_id.get(chunk["id"])
-            if not row or int(row["dims"]) != dims:
+            if not row or int(row["dims"]) != dims or (row.get("model") or "") != model:
                 return None
             blob = row["embedding"]
             if not isinstance(blob, (bytes, bytearray, memoryview)) or len(blob) != width:
@@ -158,10 +195,19 @@ class KnowledgeBase:
             vectors.append(vec)
         return vectors
 
-    def _upsert_embedding(self, chunk_id: str, tenant_id: str, content: str) -> None:
-        settings = get_settings()
-        dims = int(settings.kb_embed_dims)
-        vec = embedding_stub(content, dims=dims)
+    def _write_embedding(
+        self,
+        chunk_id: str,
+        tenant_id: str,
+        vec: Sequence[float],
+        *,
+        dims: int,
+        model: str,
+    ) -> None:
+        if len(vec) != dims:
+            raise EmbeddingsError(
+                f"embedding width {len(vec)} does not match PROAGENT_KB_EMBED_DIMS={dims}"
+            )
         blob = pack_embedding(vec)
         with self.db.connect() as conn:
             conn.execute(
@@ -174,7 +220,7 @@ class KnowledgeBase:
                     embedding=excluded.embedding,
                     model=excluded.model
                 """,
-                (chunk_id, tenant_id, dims, blob, settings.kb_embed_backend),
+                (chunk_id, tenant_id, dims, blob, model),
             )
 
 
