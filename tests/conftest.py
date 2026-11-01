@@ -35,6 +35,11 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_REQUESTS", "10000")
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    # Tracing stays off so pytest does not import opentelemetry.
+    monkeypatch.setenv("PROAGENT_OTEL_ENABLED", "false")
+    monkeypatch.setenv("PROAGENT_OTEL_EXPORTER", "none")
+    monkeypatch.setenv("PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    monkeypatch.setenv("PROAGENT_OTEL_SERVICE_NAME", "proagent-os")
     monkeypatch.setenv("PROAGENT_AGENTS_CONFIG", str(Path("config/agents.yaml").resolve()))
     monkeypatch.setenv(
         "PROAGENT_SKILLS_DIRS",
@@ -50,9 +55,11 @@ def _isolate_db(tmp_path, monkeypatch):
     from proagent_os.config import get_settings
     from proagent_os.db import reset_db
     from proagent_os.llm.factory import reset_llm_cache
+    from proagent_os.observability import reset_observability
     from proagent_os.services import reset_services
 
     get_settings.cache_clear()
+    reset_observability()
     reset_llm_cache()
     reset_db(db_path)
     reset_services()

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from proagent_os.db import SCHEMA, get_db, reset_db, utcnow
-from proagent_os.migrations import SchemaMigrationError, main
+from proagent_os.migrations import SchemaMigrationError, _TENANT_LIST_INDEXES_SQL, main
 
 
 def _migration_rows(db):
@@ -39,6 +39,7 @@ def test_fresh_database_applies_baseline_and_additive_indexes():
     assert [(c.version, c.name, c.action) for c in db.migration_changes] == [
         (1, "0001_baseline", "applied"),
         (2, "0002_tenant_list_indexes", "applied"),
+        (3, "0003_usage_events", "applied"),
     ]
     names = _names(db)
     for required in (
@@ -51,6 +52,8 @@ def test_fresh_database_applies_baseline_and_additive_indexes():
         "idx_tasks_tenant_created",
         "idx_kb_chunks_tenant",
         "idx_recommendations_tenant_status",
+        "usage_events",
+        "idx_usage_events_tenant_kind",
     ):
         assert required in names
     assert "kb_vec_index" not in names
@@ -123,6 +126,7 @@ def test_already_initialized_database_is_stamped_then_additive(monkeypatch):
     assert [(c.version, c.name, c.action) for c in db.migration_changes] == [
         (1, "0001_baseline", "stamped"),
         (2, "0002_tenant_list_indexes", "applied"),
+        (3, "0003_usage_events", "applied"),
     ]
     row = db.fetchone("SELECT api_key, note, key_status FROM tenants WHERE id=?", ("ten_keep",))
     assert row["api_key"] == "pk_keep_secret_value"
@@ -131,6 +135,7 @@ def test_already_initialized_database_is_stamped_then_additive(monkeypatch):
     assert "idx_tasks_tenant_created" in _names(db)
     assert "idx_kb_chunks_tenant" in _names(db)
     assert "idx_recommendations_tenant_status" in _names(db)
+    assert "usage_events" in _names(db)
     assert "sqlite_vec" not in sys.modules
     assert "kb_vec_index" not in _names(db)
 
@@ -177,6 +182,7 @@ def test_partial_legacy_database_runs_baseline_instead_of_stamp(monkeypatch):
     assert [(c.version, c.action) for c in db.migration_changes] == [
         (1, "applied"),
         (2, "applied"),
+        (3, "applied"),
     ]
     row = db.fetchone("SELECT key_status, api_key FROM tenants WHERE id=?", ("ten_legacy",))
     assert row["key_status"] == "active"
@@ -187,7 +193,7 @@ def test_partial_legacy_database_runs_baseline_instead_of_stamp(monkeypatch):
 
 def test_repeat_startup_applies_nothing():
     before = _migration_rows(get_db())
-    assert [row["version"] for row in before] == [1, 2]
+    assert [row["version"] for row in before] == [1, 2, 3]
     db = reset_db(get_db().path)
     assert db.migration_changes == []
     assert _migration_rows(db) == before
@@ -251,10 +257,52 @@ def test_gapped_schema_migrations_are_refused():
         reset_db(path)
 
 
+def test_version_2_database_applies_usage_events_only():
+    """A database that already recorded #22's migrations gains version 3 only."""
+    path = get_db().path.parent / "v2.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    conn.executescript(_TENANT_LIST_INDEXES_SQL)
+    conn.execute(
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    now = utcnow()
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, '0001_baseline', ?)",
+        (now,),
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (2, '0002_tenant_list_indexes', ?)",
+        (now,),
+    )
+    conn.commit()
+    assert (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE name='usage_events'").fetchone()
+        is None
+    )
+    conn.close()
+
+    db = reset_db(path)
+    assert [(c.version, c.name, c.action) for c in db.migration_changes] == [
+        (3, "0003_usage_events", "applied"),
+    ]
+    assert "usage_events" in _names(db)
+    assert "idx_usage_events_tenant_kind" in _names(db)
+    text = Path(sys.modules["proagent_os.migrations"].__file__).read_text()
+    assert "import opentelemetry" not in text
+
+
 def test_migrate_cli_prints_recorded_versions(capsys: pytest.CaptureFixture[str]):
     main()
     out = capsys.readouterr().out
     assert "already current" in out
     assert "0001_baseline" in out
     assert "0002_tenant_list_indexes" in out
+    assert "0003_usage_events" in out
     assert str(get_db().path) in out

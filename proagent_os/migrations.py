@@ -114,9 +114,30 @@ def _migration_0002_tenant_list_indexes(conn: sqlite3.Connection) -> None:
     _exec_script(conn, _TENANT_LIST_INDEXES_SQL)
 
 
+# Usage metering stub. Not a payment ledger. OpenTelemetry is not imported here.
+_USAGE_EVENTS_SQL = """
+CREATE TABLE IF NOT EXISTS usage_events (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_kind
+    ON usage_events(tenant_id, kind, created_at);
+"""
+
+
+def _migration_0003_usage_events(conn: sqlite3.Connection) -> None:
+    _exec_script(conn, _USAGE_EVENTS_SQL)
+
+
 MIGRATIONS: List[Migration] = [
     Migration(1, "0001_baseline", _migration_0001_baseline),
     Migration(2, "0002_tenant_list_indexes", _migration_0002_tenant_list_indexes),
+    Migration(3, "0003_usage_events", _migration_0003_usage_events),
 ]
 
 

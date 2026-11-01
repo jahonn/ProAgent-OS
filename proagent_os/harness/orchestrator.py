@@ -10,6 +10,7 @@ from proagent_os.db import dumps, get_db, new_id, utcnow
 from proagent_os.harness.memory import ConversationMemory
 from proagent_os.harness.registry import AgentRegistry
 from proagent_os.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall
+from proagent_os.metering import bind_tenant, unbind_tenant
 from proagent_os.professional.brand.store import BrandStore
 from proagent_os.professional.skills.loader import SkillLoader
 from proagent_os.professional.tools.base import ToolContext, ToolRegistry
@@ -90,6 +91,24 @@ class Orchestrator:
         self.max_tool_rounds = max_tool_rounds if max_tool_rounds is not None else settings.max_tool_rounds
 
     async def run_task(
+        self,
+        tenant_id: str,
+        input_text: str,
+        *,
+        conversation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run a task and attribute LLM usage rows to ``tenant_id``."""
+        token = bind_tenant(tenant_id)
+        try:
+            return await self._run_task(
+                tenant_id,
+                input_text,
+                conversation_id=conversation_id,
+            )
+        finally:
+            unbind_tenant(token)
+
+    async def _run_task(
         self,
         tenant_id: str,
         input_text: str,

@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from proagent_os.config import get_settings
 from proagent_os.db import get_db, new_id, utcnow
+from proagent_os.metering import record_usage
+from proagent_os.observability import SPAN_KB_SEARCH, span
 from proagent_os.professional.kb.chunking import chunk_text
 from proagent_os.professional.kb.embeddings import EmbeddingsError, get_embedder
 from proagent_os.professional.kb.ingest import fetch_url_text, read_local_file
@@ -86,13 +88,25 @@ class KnowledgeBase:
         )
 
     def search(self, tenant_id: str, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        chunks = self._load_chunks(tenant_id)
         settings = get_settings()
-        if settings.kb_retrieval == "bm25":
-            ranked = rank_chunks(query, chunks, top_k=top_k)
-        else:
-            ranked = self._rank_embedded(tenant_id, query, chunks, top_k=top_k)
-        return [_hit(c, score) for c, score in ranked]
+        with span(
+            SPAN_KB_SEARCH,
+            {
+                "tenant_id": tenant_id,
+                "kb.retrieval": settings.kb_retrieval,
+                "kb.top_k": top_k,
+            },
+        ) as current:
+            chunks = self._load_chunks(tenant_id)
+            if settings.kb_retrieval == "bm25":
+                ranked = rank_chunks(query, chunks, top_k=top_k)
+            else:
+                ranked = self._rank_embedded(tenant_id, query, chunks, top_k=top_k)
+            hits = [_hit(c, score) for c, score in ranked]
+            if current is not None:
+                current.set_attribute("kb.hits", len(hits))
+            record_usage(tenant_id, "kb_search", 1)
+            return hits
 
     def reindex_embeddings(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Write embeddings for existing chunks. Safe to run more than once."""
