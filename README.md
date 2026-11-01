@@ -184,6 +184,10 @@ docker compose up --build
 | `PROAGENT_KB_VECTOR_STORE` | `blob` | `blob` (Python cosine) or `sqlite_vec` (optional `vec0` index) |
 | `PROAGENT_SKILLS_DIRS` | `./skills,./verticals/example/skills,./verticals/support_desk/skills` | Skill pack roots |
 | `PROAGENT_AGENTS_CONFIG` | `./config/agents.yaml` | Core agent registry |
+| `PROAGENT_OTEL_ENABLED` | `false` | OpenTelemetry spans. `false` does not import `opentelemetry` |
+| `PROAGENT_OTEL_EXPORTER` | `console` | `console`, `otlp`, or `none`. Used only when spans are enabled |
+| `PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT` | empty | OTLP HTTP trace URL, for example `http://localhost:4318/v1/traces` |
+| `PROAGENT_OTEL_SERVICE_NAME` | `proagent-os` | `service.name` resource attribute |
 
 ## Database
 
@@ -196,6 +200,25 @@ python -m proagent_os.migrations
 A file created by the older `CREATE TABLE IF NOT EXISTS` startup is stamped at version 1. Existing rows stay in place. Later migrations still run. sqlite-vec `vec0` tables are created by the vector store when that store is selected; migrations do not load the `vec` extra.
 
 Copy the database file while the API and worker are stopped. To take a snapshot while the process is running, use SQLite's backup API (`Connection.backup`, or the `sqlite3` shell's `.backup` when that shell is installed). Details, including WAL sidecars and restore, are in [docs/DATABASE.md](docs/DATABASE.md).
+
+## Observability and usage
+
+Spans and usage totals are optional hooks. The default install does not import OpenTelemetry and does not contact a payment provider.
+
+```bash
+pip install 'proagent-os[otel]'
+export PROAGENT_OTEL_ENABLED=true
+export PROAGENT_OTEL_EXPORTER=console   # or otlp, or none
+# export PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+With the flag off, `span()` returns immediately and ProAgent does not import the OpenTelemetry SDK. With the flag on and the extra missing, a warning is logged and spans stay no-ops, so boot still succeeds. Current FastAPI releases import `opentelemetry-api` themselves; the SDK and the OTLP exporter stay in the `otel` extra. The traced calls are the HTTP request, KB search, recommendation approve and execute, and each LLM chat. Span attributes are the method, path, status code, tenant id, retrieval mode, model name, and token count. Prompt text, KB query text, and API keys are left off the span.
+
+`console` prints spans and is enough for a local demo. `otlp` uses the HTTP exporter. An empty `PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT` leaves endpoint selection to the standard `OTEL_EXPORTER_OTLP_*` variables. `none` builds spans and does not export them. The Compose file passes these variables through; the published image does not install the `otel` extra.
+
+Usage events are rows in `usage_events` (migration `0003_usage_events`): `tenant_id`, `kind` (`llm_tokens`, `kb_search`, `recommendation_execute`), `quantity`, and `created_at`. KB search and a successful recommendation execute each store quantity `1`. LLM rows store `usage.total_tokens` when the provider sends it, otherwise `prompt_tokens` + `completion_tokens`. The mock provider sends no usage block, so the quantity is `len(text) // 4` (at least 1 when there is text or a tool call). That number is an offline stand-in, not a provider invoice.
+
+`GET /api/v1/usage` with a tenant bearer returns that tenant's totals. The admin key returns every tenant, or one tenant when `tenant_id` is set. The body is labeled `"billing": "stub"` and `"payment": null`. It does not create a charge.
 
 ## Retrieval modes
 
@@ -262,6 +285,8 @@ proagent-os/
 │   ├── proactive/           # Monitors, recommendations, scheduler
 │   ├── profitable/          # Metrics + learning stub
 │   ├── api/                 # REST /api/v1/*
+│   ├── observability.py     # optional OpenTelemetry facade (no-op by default)
+│   ├── metering.py          # SQLite usage stub (no payment provider)
 │   └── web/                 # Console UI
 ├── config/agents.yaml
 ├── skills/
@@ -297,7 +322,7 @@ File-by-file steps for that layout, the startup merge, `PROAGENT_SKILLS_DIRS`, a
 - `GET /api/v1/skills` · `POST /api/v1/skills/{id}/invoke`
 - `POST /api/v1/monitors` · `POST /api/v1/monitors/{id}/run`
 - `GET /api/v1/recommendations` · `POST .../approve|reject|decide` — strict transitions (`pending` → `approved`/`rejected`, `approved` → `executed`). Approve may include `execution: {ok, mode, error?}`. A failed webhook stays `approved` (HTTP 200) and writes `execute_failed`. Illegal transitions are HTTP 400.
-- `POST /api/v1/metrics/outcomes` · `GET /api/v1/dashboard`
+- `POST /api/v1/metrics/outcomes` · `GET /api/v1/usage` (metering stub; tenant bearer, or admin for all tenants / `?tenant_id=`) · `GET /api/v1/dashboard`
 
 ## Tests
 
@@ -307,7 +332,7 @@ pip install -e .
 pytest -q
 ```
 
-CI runs `pytest -q` on Python 3.11 and 3.12 with `PROAGENT_LLM_PROVIDER=mock`. It does not install the `vec` extra. The sqlite-vec extension test is marked `sqlite_vec` and skips when the package is missing or the extension cannot load. Blob-store and index-wiring tests still run.
+CI runs `pytest -q` on Python 3.11 and 3.12 with `PROAGENT_LLM_PROVIDER=mock`. It does not install the `vec` or `otel` extras. The sqlite-vec extension test is marked `sqlite_vec` and skips when the package is missing or the extension cannot load. Blob-store and index-wiring tests still run. OpenTelemetry tests keep the SDK import off unless `PROAGENT_OTEL_ENABLED=true`.
 
 ## Contributing
 
@@ -329,7 +354,7 @@ Known gaps in this tree:
 - Multi-node deploy. SQLite stays a single-writer file. Schema migrations run on startup; backup and restore are in [docs/DATABASE.md](docs/DATABASE.md).
 - Recommendation executors beyond noop and one operator-configured webhook (no per-action code, no URL taken from the action payload)
 - A real evaluation harness (the learning loop is score nudges)
-- Billing, metering, OpenTelemetry
+- A payment provider. `usage_events` and `GET /api/v1/usage` are a metering stub (`billing: stub`) and do not create charges. OpenTelemetry export is optional (`pip install 'proagent-os[otel]'`, `PROAGENT_OTEL_ENABLED=true`) and stays off in the default install.
 - A richer product UI and i18n
 - The v0.1.0 GitHub Release tag (this changelog describes the tree; the tag is still open on the roadmap)
 
@@ -337,7 +362,8 @@ Known gaps in this tree:
 
 - Never commit `.env` or API keys
 - Rotate any key that was pasted into chat or logs. `POST /api/v1/tenants/me/api-key/rotate` invalidates the previous tenant key immediately. `POST /api/v1/tenants/me/api-key/revoke` disables it until an admin calls `POST /api/v1/tenants/{tenant_id}/api-key/rotate`. Logs and `tenant_api_key_audit` keep a prefix and SHA-256, not the raw key.
-- The rate limit is a per-process stub. It is not a billing quota and it does not survive a restart.
+- The rate limit is a per-process stub. It is not a billing quota and it does not survive a restart. `GET /api/v1/usage` is a separate SQLite counter, also not a quota and not a charge.
+- OpenTelemetry span attributes include the tenant id, model name, and token count. They omit prompt text, knowledge-base query text, and API keys. Leave `PROAGENT_OTEL_ENABLED` false unless you intend to export that metadata.
 - Approve and execute are privileged. A tenant API key that can approve can trigger the configured executor. Treat that key like a write credential.
 - `webhook` mode POSTs only to `PROAGENT_EXECUTOR_WEBHOOK_URL`. The recommendation `action` JSON is body data. It is not a URL, a shell command, or code. Redirects and environment proxies are disabled for that call.
 - Webhook receivers should treat `recommendation_id` as an idempotency key. A crash after a successful POST can retry the same recommendation.

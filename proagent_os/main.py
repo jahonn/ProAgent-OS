@@ -12,6 +12,7 @@ from proagent_os import __version__
 from proagent_os.api import api_router
 from proagent_os.config import get_settings
 from proagent_os.db import get_db
+from proagent_os.observability import shutdown_observability, trace_http_request
 from proagent_os.ratelimit import enforce_rate_limit
 from proagent_os.services import get_services
 
@@ -24,6 +25,7 @@ async def lifespan(_app: FastAPI):
     get_db()
     get_services()
     yield
+    shutdown_observability()
 
 
 def create_app() -> FastAPI:
@@ -36,7 +38,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router)
+    # Last added middleware runs first. Tracing wraps the rate limit so a 429
+    # is still a span when OpenTelemetry is enabled. Disabled, this is a no-op
+    # and does not import opentelemetry.
     app.middleware("http")(enforce_rate_limit)
+    app.middleware("http")(trace_http_request)
 
     static_dir = WEB_DIR / "static"
     static_dir.mkdir(parents=True, exist_ok=True)

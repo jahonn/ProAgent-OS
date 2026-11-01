@@ -56,11 +56,21 @@ class Settings(BaseSettings):
     rate_limit_requests: int = Field(default=120, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
 
+    # OpenTelemetry is off unless this flag is set. The SDK is imported only
+    # then, and only when the otel extra is installed. See observability.py.
+    otel_enabled: bool = False
+    otel_service_name: str = "proagent-os"
+    # none: spans exist in-process and are not exported.
+    # console: print spans (demos). otlp: HTTP exporter, endpoint optional.
+    otel_exporter: Literal["none", "console", "otlp"] = "console"
+    otel_exporter_otlp_endpoint: str = ""
+
     @field_validator(
         "kb_retrieval",
         "kb_embed_backend",
         "kb_vector_store",
         "executor_mode",
+        "otel_exporter",
         mode="before",
     )
     @classmethod

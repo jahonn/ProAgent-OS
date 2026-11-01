@@ -26,6 +26,13 @@ dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
 # PROAGENT_KB_VECTOR_STORE=sqlite_vec. BM25 and the default blob store do not
 # import it. pgvector is not a dependency.
 vec = ["sqlite-vec>=0.1.9"]
+# Optional OpenTelemetry SDK. Imported only when PROAGENT_OTEL_ENABLED=true.
+# The default install and CI do not install this extra.
+otel = [
+  "opentelemetry-api>=1.27.0",
+  "opentelemetry-sdk>=1.27.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

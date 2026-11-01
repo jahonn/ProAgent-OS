@@ -5,6 +5,12 @@ from typing import Any, Dict, List, Optional
 
 from proagent_os.config import get_settings
 from proagent_os.db import dumps, get_db, loads, new_id, utcnow
+from proagent_os.metering import record_usage
+from proagent_os.observability import (
+    SPAN_RECOMMENDATION_APPROVE,
+    SPAN_RECOMMENDATION_EXECUTE,
+    span,
+)
 from proagent_os.proactive.executors import ExecutionResult, build_executor
 
 logger = logging.getLogger("proagent.recommendations")
@@ -90,39 +96,52 @@ class RecommendationService:
             return self.get(tenant_id, rec_id) or {}
 
         if status == "approved":
-            self._set_status(tenant_id, rec_id, "approved", decided_at=utcnow())
-            self._audit(
-                tenant_id=tenant_id,
-                recommendation_id=rec_id,
-                event="decided",
-                from_status=current,
-                to_status="approved",
-                actor=actor,
-                detail={"status": "approved"},
-            )
-            updated = self.get(tenant_id, rec_id) or {}
-            settings = get_settings()
-            if settings.executor_on_approve and settings.executor_mode != "off":
-                execution = self._invoke_executor(updated, actor)
-                updated = self.get(tenant_id, rec_id) or updated
-                updated["execution"] = execution
-            return updated
+            with span(
+                SPAN_RECOMMENDATION_APPROVE,
+                {"tenant_id": tenant_id, "recommendation.id": rec_id},
+            ):
+                self._set_status(tenant_id, rec_id, "approved", decided_at=utcnow())
+                self._audit(
+                    tenant_id=tenant_id,
+                    recommendation_id=rec_id,
+                    event="decided",
+                    from_status=current,
+                    to_status="approved",
+                    actor=actor,
+                    detail={"status": "approved"},
+                )
+                updated = self.get(tenant_id, rec_id) or {}
+                settings = get_settings()
+                if settings.executor_on_approve and settings.executor_mode != "off":
+                    execution = self._invoke_executor(updated, actor)
+                    updated = self.get(tenant_id, rec_id) or updated
+                    updated["execution"] = execution
+                return updated
 
         settings = get_settings()
         if settings.executor_mode == "off":
-            self._set_status(tenant_id, rec_id, "executed")
-            self._audit(
-                tenant_id=tenant_id,
-                recommendation_id=rec_id,
-                event="executed",
-                from_status=current,
-                to_status="executed",
-                actor=actor,
-                detail={"mode": "off"},
-            )
-            updated = self.get(tenant_id, rec_id) or {}
-            updated["execution"] = {"ok": True, "mode": "off"}
-            return updated
+            with span(
+                SPAN_RECOMMENDATION_EXECUTE,
+                {
+                    "tenant_id": tenant_id,
+                    "recommendation.id": rec_id,
+                    "executor.mode": "off",
+                },
+            ):
+                self._set_status(tenant_id, rec_id, "executed")
+                self._audit(
+                    tenant_id=tenant_id,
+                    recommendation_id=rec_id,
+                    event="executed",
+                    from_status=current,
+                    to_status="executed",
+                    actor=actor,
+                    detail={"mode": "off"},
+                )
+                record_usage(tenant_id, "recommendation_execute", 1)
+                updated = self.get(tenant_id, rec_id) or {}
+                updated["execution"] = {"ok": True, "mode": "off"}
+                return updated
 
         execution = self._invoke_executor(row, actor)
         updated = self.get(tenant_id, rec_id) or {}
@@ -159,38 +178,47 @@ class RecommendationService:
     def _invoke_executor(self, row: Dict[str, Any], actor: str) -> Dict[str, Any]:
         settings = get_settings()
         mode = settings.executor_mode
-        try:
-            result = build_executor(settings).execute(row)
-        except Exception as exc:  # noqa: BLE001 — config and delivery failures stay on the row
-            logger.warning(
-                "executor failed for recommendation %s (%s)",
-                row.get("id"),
-                type(exc).__name__,
-            )
-            message = str(exc).strip() or type(exc).__name__
-            result = ExecutionResult(ok=False, mode=mode, error=message[:240])
-        if result.ok:
-            self._set_status(row["tenant_id"], row["id"], "executed")
-            self._audit(
-                tenant_id=row["tenant_id"],
-                recommendation_id=row["id"],
-                event="executed",
-                from_status="approved",
-                to_status="executed",
-                actor=actor,
-                detail=result.as_api(),
-            )
-        else:
-            self._audit(
-                tenant_id=row["tenant_id"],
-                recommendation_id=row["id"],
-                event="execute_failed",
-                from_status="approved",
-                to_status="approved",
-                actor=actor,
-                detail=result.as_api(),
-            )
-        return result.as_api()
+        with span(
+            SPAN_RECOMMENDATION_EXECUTE,
+            {
+                "tenant_id": row.get("tenant_id") or "",
+                "recommendation.id": row.get("id") or "",
+                "executor.mode": mode,
+            },
+        ):
+            try:
+                result = build_executor(settings).execute(row)
+            except Exception as exc:  # noqa: BLE001 — config and delivery failures stay on the row
+                logger.warning(
+                    "executor failed for recommendation %s (%s)",
+                    row.get("id"),
+                    type(exc).__name__,
+                )
+                message = str(exc).strip() or type(exc).__name__
+                result = ExecutionResult(ok=False, mode=mode, error=message[:240])
+            if result.ok:
+                self._set_status(row["tenant_id"], row["id"], "executed")
+                self._audit(
+                    tenant_id=row["tenant_id"],
+                    recommendation_id=row["id"],
+                    event="executed",
+                    from_status="approved",
+                    to_status="executed",
+                    actor=actor,
+                    detail=result.as_api(),
+                )
+                record_usage(row["tenant_id"], "recommendation_execute", 1)
+            else:
+                self._audit(
+                    tenant_id=row["tenant_id"],
+                    recommendation_id=row["id"],
+                    event="execute_failed",
+                    from_status="approved",
+                    to_status="approved",
+                    actor=actor,
+                    detail=result.as_api(),
+                )
+            return result.as_api()
 
     def _audit(
         self,
