@@ -235,6 +235,8 @@ proagent-os/
 `verticals/example/` is the minimal pattern (`market_scout` + `market_scan`).
 `verticals/support_desk/` is a support-desk pack: sample policies, `support_triage`, `ticket_triage` / `policy_lookup`, and `python scripts/demo_support_desk.py` (mock LLM, no API key). It is an MVP demo, not a production helpdesk.
 
+File-by-file steps for that layout, the startup merge, `PROAGENT_SKILLS_DIRS`, and a mock-LLM smoke test are in [docs/VERTICAL_SKILL.md](docs/VERTICAL_SKILL.md).
+
 ## API overview
 
 - `POST /api/v1/tenants` (admin) · `GET /api/v1/tenants/me` · `GET /api/v1/tenants` (admin; includes `key_status`, not the secret)
