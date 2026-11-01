@@ -20,6 +20,10 @@ def new_id(prefix: str = "") -> str:
     return f"{prefix}_{uid}" if prefix else uid
 
 
+# Baseline DDL shipped as migration ``0001_baseline``.
+# A database that already has these tables and indexes is stamped at version 1;
+# this script is not executed again. Add later changes in
+# ``proagent_os/migrations.py`` instead of editing this string.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenants (
     id TEXT PRIMARY KEY,
@@ -192,21 +196,15 @@ class Database:
         settings = get_settings()
         self.path = Path(path) if path else settings.db_path_resolved
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.migration_changes: list = []
         self._init()
 
     def _init(self) -> None:
         with self.connect() as conn:
-            conn.executescript(SCHEMA)
-            self._ensure_tenant_key_status(conn)
+            # Lazy import: migrations imports SCHEMA from this module.
+            from proagent_os.migrations import apply_migrations
 
-    @staticmethod
-    def _ensure_tenant_key_status(conn: sqlite3.Connection) -> None:
-        # CREATE TABLE IF NOT EXISTS does not add columns to an existing tenants table.
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(tenants)")}
-        if "key_status" not in cols:
-            conn.execute(
-                "ALTER TABLE tenants ADD COLUMN key_status TEXT NOT NULL DEFAULT 'active'"
-            )
+            self.migration_changes = apply_migrations(conn)
 
     @contextmanager
     def connect(
