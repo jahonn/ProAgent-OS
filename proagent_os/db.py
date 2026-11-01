@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 from uuid import uuid4
 
 from proagent_os.config import get_settings
@@ -209,11 +209,23 @@ class Database:
             )
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(
+        self,
+        *,
+        initializer: Optional[Callable[[sqlite3.Connection], None]] = None,
+    ) -> Iterator[sqlite3.Connection]:
+        """Open a connection, commit on success, and always close it.
+
+        ``initializer`` runs after ``PRAGMA foreign_keys`` and before the
+        caller uses the connection. The sqlite-vec store passes a loader
+        here. The default path does not.
+        """
         conn = sqlite3.connect(str(self.path))
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            if initializer is not None:
+                initializer(conn)
             yield conn
             conn.commit()
         except Exception:

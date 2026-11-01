@@ -277,6 +277,7 @@ def test_retrieval_settings_defaults_and_validation(monkeypatch):
     assert settings.kb_embed_backend == "stub"
     assert settings.kb_embed_dims == 64
     assert settings.kb_hybrid_alpha == 0.5
+    assert settings.kb_vector_store == "blob"
     assert settings.kb_embed_model == "text-embedding-3-small"
     assert settings.kb_embed_base_url == ""
     assert settings.kb_embed_api_key == ""

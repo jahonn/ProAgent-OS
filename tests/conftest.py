@@ -28,6 +28,7 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_KB_EMBED_BASE_URL", "")
     monkeypatch.setenv("PROAGENT_KB_EMBED_API_KEY", "")
     monkeypatch.setenv("PROAGENT_KB_HYBRID_ALPHA", "0.5")
+    monkeypatch.setenv("PROAGENT_KB_VECTOR_STORE", "blob")
     monkeypatch.setenv("PROAGENT_LLM_API_KEY", "")
     monkeypatch.setenv("PROAGENT_LLM_BASE_URL", "https://api.openai.com/v1")
     # High ceiling so existing API tests do not trip the stub. Dedicated tests lower it.
