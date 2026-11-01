@@ -33,12 +33,18 @@ class Settings(BaseSettings):
     executor_webhook_token: str = ""
     executor_on_approve: bool = True
 
-    # KB retrieval. Default bm25 so installs and CI need no embedding dependency.
+    # KB retrieval. Default bm25 so installs and CI need no embedding service.
     # hybrid: alpha * norm(vector) + (1 - alpha) * norm(bm25)
-    # vector: cosine on stored embeddings (stub backend only, for now)
+    # vector: cosine on stored embeddings
+    # stub: offline hash-bag. openai: POST {base}/embeddings (OpenAI-compatible).
     kb_retrieval: Literal["bm25", "hybrid", "vector"] = "bm25"
-    kb_embed_backend: Literal["stub"] = "stub"
+    kb_embed_backend: Literal["stub", "openai"] = "stub"
     kb_embed_dims: int = Field(default=64, ge=1, le=4096)
+    # Model id sent as `model` when the backend is openai. Ignored by stub.
+    kb_embed_model: str = "text-embedding-3-small"
+    # Empty values reuse PROAGENT_LLM_BASE_URL and PROAGENT_LLM_API_KEY.
+    kb_embed_base_url: str = ""
+    kb_embed_api_key: str = ""
     kb_hybrid_alpha: float = Field(default=0.5, ge=0.0, le=1.0)
 
     # In-process fixed window per tenant (admin and anonymous are separate buckets).

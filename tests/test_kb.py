@@ -255,18 +255,41 @@ def test_dim_mismatch_falls_back_until_reindex(monkeypatch):
     assert dims == {32}
 
 
+def test_embedding_model_mismatch_falls_back_to_bm25(monkeypatch):
+    tid = _tenant()
+    kb = get_services().kb
+    _use_retrieval(monkeypatch, "vector")
+    _ingest_alpha_corpus(kb, tid)
+    assert kb.search(tid, "alpha beta", top_k=1)[0]["content"] == "alpha beta"
+    get_db().execute(
+        "UPDATE kb_chunk_embeddings SET model=? WHERE tenant_id=?",
+        ("other-model", tid),
+    )
+    _use_retrieval(monkeypatch, "bm25")
+    bm25_hits = kb.search(tid, "alpha beta", top_k=3)
+    _use_retrieval(monkeypatch, "vector")
+    assert kb.search(tid, "alpha beta", top_k=3) == bm25_hits
+
+
 def test_retrieval_settings_defaults_and_validation(monkeypatch):
     settings = get_settings()
     assert settings.kb_retrieval == "bm25"
     assert settings.kb_embed_backend == "stub"
     assert settings.kb_embed_dims == 64
     assert settings.kb_hybrid_alpha == 0.5
+    assert settings.kb_embed_model == "text-embedding-3-small"
+    assert settings.kb_embed_base_url == ""
+    assert settings.kb_embed_api_key == ""
 
     monkeypatch.setenv("PROAGENT_KB_RETRIEVAL", "Hybrid")
     get_settings.cache_clear()
     assert get_settings().kb_retrieval == "hybrid"
 
-    monkeypatch.setenv("PROAGENT_KB_EMBED_BACKEND", "openai")
+    monkeypatch.setenv("PROAGENT_KB_EMBED_BACKEND", "OpenAI")
+    get_settings.cache_clear()
+    assert get_settings().kb_embed_backend == "openai"
+
+    monkeypatch.setenv("PROAGENT_KB_EMBED_BACKEND", "cohere")
     get_settings.cache_clear()
     with pytest.raises(ValidationError):
         get_settings()

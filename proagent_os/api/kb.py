@@ -7,9 +7,15 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from proagent_os.auth import TenantDep
 from proagent_os.models.schemas import KbIngestText, KbIngestUrl, KbSearchQuery
+from proagent_os.professional.kb.embeddings import EmbeddingsError
 from proagent_os.services import get_services
 
 router = APIRouter()
+
+
+def _embed_unavailable(exc: EmbeddingsError) -> HTTPException:
+    """Surface a missing key or a failed embeddings call instead of a bare 500."""
+    return HTTPException(503, str(exc))
 
 
 @router.get("/documents")
@@ -23,14 +29,20 @@ def list_docs(tenant: TenantDep) -> list:
 async def ingest_url(body: KbIngestUrl, tenant: TenantDep) -> dict:
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
-    return await get_services().kb.ingest_url(tenant["id"], body.url)
+    try:
+        return await get_services().kb.ingest_url(tenant["id"], body.url)
+    except EmbeddingsError as exc:
+        raise _embed_unavailable(exc) from exc
 
 
 @router.post("/ingest/text")
 def ingest_text(body: KbIngestText, tenant: TenantDep) -> dict:
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
-    return get_services().kb.ingest_text(tenant["id"], body.source, body.title, body.content)
+    try:
+        return get_services().kb.ingest_text(tenant["id"], body.source, body.title, body.content)
+    except EmbeddingsError as exc:
+        raise _embed_unavailable(exc) from exc
 
 
 @router.post("/ingest/file")
@@ -48,7 +60,10 @@ async def ingest_file(tenant: TenantDep, file: UploadFile = File(...)) -> dict:
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{tenant['id']}_{file.filename or path.name}"
         dest.write_bytes(data)
-        return get_services().kb.ingest_file(tenant["id"], dest)
+        try:
+            return get_services().kb.ingest_file(tenant["id"], dest)
+        except EmbeddingsError as exc:
+            raise _embed_unavailable(exc) from exc
     finally:
         path.unlink(missing_ok=True)
 
@@ -57,5 +72,8 @@ async def ingest_file(tenant: TenantDep, file: UploadFile = File(...)) -> dict:
 def search(body: KbSearchQuery, tenant: TenantDep) -> dict:
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
-    hits = get_services().kb.search(tenant["id"], body.query, top_k=body.top_k)
+    try:
+        hits = get_services().kb.search(tenant["id"], body.query, top_k=body.top_k)
+    except EmbeddingsError as exc:
+        raise _embed_unavailable(exc) from exc
     return {"query": body.query, "hits": hits}

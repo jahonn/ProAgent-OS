@@ -155,14 +155,20 @@ def rank_chunks_with_embeddings(
     alpha: float = 0.5,
     top_k: int = 5,
     dims: int = 64,
+    query_embedding: Optional[Sequence[float]] = None,
 ) -> List[Tuple[Dict, float]]:
-    """Rank chunks by stub cosine (``vector``) or hybrid fusion.
+    """Rank chunks by cosine (``vector``) or hybrid fusion.
 
     ``mode='bm25'`` or a length mismatch delegates to :func:`rank_chunks`.
+    When ``query_embedding`` is omitted, the offline stub embedder is used
+    so callers that do not supply a vector stay deterministic.
     """
     if mode == "bm25" or len(chunks) != len(embeddings):
         return rank_chunks(query, chunks, top_k=top_k)
-    query_vec = embedding_stub(query, dims=dims)
+    if query_embedding is None:
+        query_vec = embedding_stub(query, dims=dims)
+    else:
+        query_vec = [float(value) for value in query_embedding]
     vector_scores = [cosine_similarity(query_vec, emb) for emb in embeddings]
     if mode == "vector":
         scores = vector_scores

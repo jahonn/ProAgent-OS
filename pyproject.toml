@@ -22,7 +22,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
-# Reserved for a later sqlite-vec backend. The stub hybrid path does not import it.
+# Reserved for a later sqlite-vec index. The openai embeddings backend uses
+# httpx and does not import this extra. pgvector is not a dependency.
 vec = ["sqlite-vec"]
 
 [tool.pytest.ini_options]
