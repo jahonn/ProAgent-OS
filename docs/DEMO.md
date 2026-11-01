@@ -168,3 +168,60 @@ curl -s -X POST http://localhost:8080/api/v1/tenants \
 The JSON includes a new `api_key`. Use that bearer token for tenant routes. `dev-admin-key` can list tenants; it is the bootstrap admin key from the environment, not a tenant key.
 
 Docker Compose (`docker compose up --build`) also starts from an empty volume. Create a tenant the same way. It does not mount `data/demo.db`.
+
+## Troubleshooting
+
+Common issues when running the mock demo or starting the API for the first time.
+
+### Forgot to activate the virtual environment / wrong Python
+
+If `python` or `pip` commands fail with module-not-found errors, or the version is older than 3.11:
+
+```bash
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python --version            # should be 3.11+
+```
+
+Re-run `pip install -r requirements.txt` and `pip install -e .` after activating. See the [Setup](#setup) section.
+
+### Port 8080 already in use
+
+When starting uvicorn:
+
+```bash
+uvicorn proagent_os.main:app --reload --port 8080
+```
+
+you may see `Address already in use`. Free the port or pick another:
+
+```bash
+# find and stop the process using 8080, or
+uvicorn proagent_os.main:app --reload --port 8081
+```
+
+### Fresh database vs demo database
+
+`python scripts/demo.py` writes to `./data/demo.db` (gitignored) when `PROAGENT_DB_PATH` is unset. If you already have a database or want a clean start:
+
+- Unset or remove `PROAGENT_DB_PATH` so the script uses `./data/demo.db` and deletes it first.
+- Or explicitly set `PROAGENT_DB_PATH=./data/demo.db` after the script runs, then start the API against that file so the demo tenant key `pk_demo_acme_analytics` works.
+- For a completely empty app, use `PROAGENT_DB_PATH=./data/proagent.db` and create a tenant (see [Fresh API database](#fresh-api-database)).
+
+See the environment table in the [root README](../README.md#environment-variables).
+
+### OpenAI provider without an API key
+
+Setting `PROAGENT_LLM_PROVIDER=openai` without `PROAGENT_LLM_API_KEY` causes the provider to fall back to mock (or fail depending on configuration). For the offline demo leave the provider unset or set it to `mock`. Real keys belong only in your local `.env` or shell; never commit them.
+
+### Rate limit 429 during local testing
+
+Heavy local curling of `/api/v1` can hit the in-process rate limiter (default 120 requests / 60 s). Raise the limits or disable temporarily:
+
+```bash
+export PROAGENT_RATE_LIMIT_REQUESTS=1000
+export PROAGENT_RATE_LIMIT_WINDOW_SECONDS=60
+# or
+export PROAGENT_RATE_LIMIT_ENABLED=false
+```
+
+See `PROAGENT_RATE_LIMIT_*` in the [environment variables table](../README.md#environment-variables).
