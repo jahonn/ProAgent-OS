@@ -151,8 +151,9 @@ docker compose up --build
 ```
 
 - API/UI: http://localhost:8080
-- Services: `api` + `worker` sharing a SQLite volume
+- Services: `api` + `worker` sharing a SQLite volume. Startup applies schema migrations on that file.
 - This path starts a fresh database volume. Create a tenant with the curl above; it does not load `data/demo.db`.
+- Backup and restore: [docs/DATABASE.md](docs/DATABASE.md).
 
 ## Environment variables
 
@@ -183,6 +184,18 @@ docker compose up --build
 | `PROAGENT_KB_VECTOR_STORE` | `blob` | `blob` (Python cosine) or `sqlite_vec` (optional `vec0` index) |
 | `PROAGENT_SKILLS_DIRS` | `./skills,./verticals/example/skills,./verticals/support_desk/skills` | Skill pack roots |
 | `PROAGENT_AGENTS_CONFIG` | `./config/agents.yaml` | Core agent registry |
+
+## Database
+
+Tenant data lives in one SQLite file, `PROAGENT_DB_PATH` (default `./data/proagent.db`). The API and the worker open that file on startup and apply any schema migrations that are not yet recorded in `schema_migrations`. The same step is available while the server is stopped:
+
+```bash
+python -m proagent_os.migrations
+```
+
+A file created by the older `CREATE TABLE IF NOT EXISTS` startup is stamped at version 1. Existing rows stay in place. Later migrations still run. sqlite-vec `vec0` tables are created by the vector store when that store is selected; migrations do not load the `vec` extra.
+
+Copy the database file while the API and worker are stopped. To take a snapshot while the process is running, use SQLite's backup API (`Connection.backup`, or the `sqlite3` shell's `.backup` when that shell is installed). Details, including WAL sidecars and restore, are in [docs/DATABASE.md](docs/DATABASE.md).
 
 ## Retrieval modes
 
@@ -255,7 +268,7 @@ proagent-os/
 ├── verticals/example/       # Minimal vertical pattern
 ├── verticals/support_desk/  # Support desk pack (policies, triage, demo)
 ├── scripts/demo.py · demo_live.py · demo_support_desk.py · record_demo.py
-├── docs/DEMO.md · demo.cast · demo.svg
+├── docs/DATABASE.md · DEMO.md · VERTICAL_SKILL.md · demo.cast · demo.svg
 ├── tests/
 └── docker-compose.yml
 ```
@@ -313,7 +326,7 @@ Known gaps in this tree:
 
 - sqlite-vec is an optional `vec0` index (`PROAGENT_KB_VECTOR_STORE=sqlite_vec`, extra `vec`). It is not HNSW, and one KNN query returns at most 4096 neighbors. pgvector is not wired. Default search remains BM25. The default vector store remains the offline blob plus Python cosine. Remote embeddings are available with `PROAGENT_KB_EMBED_BACKEND=openai`.
 - OAuth / SSO, RBAC, and a shared quota service. Recommendation decisions write `recommendation_audit`. API key issue, rotate, and revoke write `tenant_api_key_audit`. `/api/v1` has an in-process rate-limit stub (no Redis).
-- Multi-node deploy, migrations, backups (beyond single SQLite)
+- Multi-node deploy. SQLite stays a single-writer file. Schema migrations run on startup; backup and restore are in [docs/DATABASE.md](docs/DATABASE.md).
 - Recommendation executors beyond noop and one operator-configured webhook (no per-action code, no URL taken from the action payload)
 - A real evaluation harness (the learning loop is score nudges)
 - Billing, metering, OpenTelemetry
