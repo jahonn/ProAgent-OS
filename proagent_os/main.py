@@ -13,6 +13,7 @@ from proagent_os.api import api_router
 from proagent_os.config import get_settings
 from proagent_os.db import get_db
 from proagent_os.observability import shutdown_observability, trace_http_request
+from proagent_os.oidc import require_auth_config
 from proagent_os.ratelimit import enforce_rate_limit
 from proagent_os.services import get_services
 
@@ -30,6 +31,8 @@ async def lifespan(_app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # oidc without issuer, audience, and client id raises before the app exists.
+    require_auth_config(settings)
     app = FastAPI(
         title="ProAgent OS",
         description="Vertical-agnostic Pro-Agent framework (Professional / Proactive / Profitable).",
@@ -50,7 +53,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": __version__, "llm": settings.llm_provider}
+        return {
+            "status": "ok",
+            "version": __version__,
+            "llm": settings.llm_provider,
+            "auth_mode": settings.auth_mode,
+        }
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request) -> HTMLResponse:

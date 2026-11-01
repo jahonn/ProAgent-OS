@@ -9,15 +9,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from proagent_os.auth import TenantDep
+from proagent_os.auth import TenantDep, enforce
 from proagent_os.db import get_db
 from proagent_os.metering import usage_report
+from proagent_os.rbac import Permission
 
 router = APIRouter()
 
 
 @router.get("")
 def read_usage(tenant: TenantDep, tenant_id: str | None = None) -> dict:
+    enforce(tenant, Permission.USAGE_READ)
     if tenant.get("is_admin"):
         if tenant_id is not None:
             found = get_db().fetchone("SELECT id FROM tenants WHERE id=?", (tenant_id,))

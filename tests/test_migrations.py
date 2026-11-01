@@ -40,6 +40,7 @@ def test_fresh_database_applies_baseline_and_additive_indexes():
         (1, "0001_baseline", "applied"),
         (2, "0002_tenant_list_indexes", "applied"),
         (3, "0003_usage_events", "applied"),
+        (4, "0004_tenant_role_overrides", "applied"),
     ]
     names = _names(db)
     for required in (
@@ -54,6 +55,7 @@ def test_fresh_database_applies_baseline_and_additive_indexes():
         "idx_recommendations_tenant_status",
         "usage_events",
         "idx_usage_events_tenant_kind",
+        "tenant_role_overrides",
     ):
         assert required in names
     assert "kb_vec_index" not in names
@@ -127,6 +129,7 @@ def test_already_initialized_database_is_stamped_then_additive(monkeypatch):
         (1, "0001_baseline", "stamped"),
         (2, "0002_tenant_list_indexes", "applied"),
         (3, "0003_usage_events", "applied"),
+        (4, "0004_tenant_role_overrides", "applied"),
     ]
     row = db.fetchone("SELECT api_key, note, key_status FROM tenants WHERE id=?", ("ten_keep",))
     assert row["api_key"] == "pk_keep_secret_value"
@@ -136,6 +139,7 @@ def test_already_initialized_database_is_stamped_then_additive(monkeypatch):
     assert "idx_kb_chunks_tenant" in _names(db)
     assert "idx_recommendations_tenant_status" in _names(db)
     assert "usage_events" in _names(db)
+    assert "tenant_role_overrides" in _names(db)
     assert "sqlite_vec" not in sys.modules
     assert "kb_vec_index" not in _names(db)
 
@@ -183,6 +187,7 @@ def test_partial_legacy_database_runs_baseline_instead_of_stamp(monkeypatch):
         (1, "applied"),
         (2, "applied"),
         (3, "applied"),
+        (4, "applied"),
     ]
     row = db.fetchone("SELECT key_status, api_key FROM tenants WHERE id=?", ("ten_legacy",))
     assert row["key_status"] == "active"
@@ -193,7 +198,7 @@ def test_partial_legacy_database_runs_baseline_instead_of_stamp(monkeypatch):
 
 def test_repeat_startup_applies_nothing():
     before = _migration_rows(get_db())
-    assert [row["version"] for row in before] == [1, 2, 3]
+    assert [row["version"] for row in before] == [1, 2, 3, 4]
     db = reset_db(get_db().path)
     assert db.migration_changes == []
     assert _migration_rows(db) == before
@@ -257,8 +262,8 @@ def test_gapped_schema_migrations_are_refused():
         reset_db(path)
 
 
-def test_version_2_database_applies_usage_events_only():
-    """A database that already recorded #22's migrations gains version 3 only."""
+def test_version_2_database_applies_later_migrations():
+    """A database that already recorded #22's migrations gains versions 3 and 4."""
     path = get_db().path.parent / "v2.db"
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
@@ -291,9 +296,11 @@ def test_version_2_database_applies_usage_events_only():
     db = reset_db(path)
     assert [(c.version, c.name, c.action) for c in db.migration_changes] == [
         (3, "0003_usage_events", "applied"),
+        (4, "0004_tenant_role_overrides", "applied"),
     ]
     assert "usage_events" in _names(db)
     assert "idx_usage_events_tenant_kind" in _names(db)
+    assert "tenant_role_overrides" in _names(db)
     text = Path(sys.modules["proagent_os.migrations"].__file__).read_text()
     assert "import opentelemetry" not in text
 
@@ -305,4 +312,5 @@ def test_migrate_cli_prints_recorded_versions(capsys: pytest.CaptureFixture[str]
     assert "0001_baseline" in out
     assert "0002_tenant_list_indexes" in out
     assert "0003_usage_events" in out
+    assert "0004_tenant_role_overrides" in out
     assert str(get_db().path) in out

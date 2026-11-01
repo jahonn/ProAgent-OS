@@ -160,6 +160,10 @@ docker compose up --build
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PROAGENT_ADMIN_KEY` | `dev-admin-key` | Bootstrap / list tenants. Also mints a replacement key after revoke |
+| `PROAGENT_AUTH_MODE` | `api_key` | `api_key` (default) or `oidc` (sketch; no identity-provider call). See [docs/AUTH.md](docs/AUTH.md) |
+| `PROAGENT_OIDC_ISSUER` | empty | Issuer URL. Required only when `PROAGENT_AUTH_MODE=oidc`. Matched against JWT `iss` |
+| `PROAGENT_OIDC_AUDIENCE` | empty | Expected JWT `aud`. Required only for `oidc` |
+| `PROAGENT_OIDC_CLIENT_ID` | empty | Public OAuth client id for a future code flow. Required only for `oidc`. Not a secret |
 | `PROAGENT_RATE_LIMIT_ENABLED` | `true` | In-process fixed window on `/api/v1`. `false` turns it off |
 | `PROAGENT_RATE_LIMIT_REQUESTS` | `120` | Requests allowed per window, per bucket |
 | `PROAGENT_RATE_LIMIT_WINDOW_SECONDS` | `60` | Fixed window length in seconds |
@@ -310,9 +314,16 @@ proagent-os/
 
 File-by-file steps for that layout, the startup merge, `PROAGENT_SKILLS_DIRS`, and a mock-LLM smoke test are in [docs/VERTICAL_SKILL.md](docs/VERTICAL_SKILL.md).
 
+## Authentication
+
+Demo and curl commands on this page stay on `PROAGENT_AUTH_MODE=api_key`: send `Authorization: Bearer` with the admin key or a tenant API key. That path is unchanged.
+
+The admin key is role `admin`. A new tenant key is role `tenant_operator`. An admin can set `tenant_readonly` with `PUT /api/v1/tenants/{tenant_id}/role`. Readonly can read recommendations and usage, and cannot approve or rotate. `PROAGENT_AUTH_MODE=oidc` is a sketch: startup fails until issuer, audience, and client id are set, and the process still does not call an identity provider. Roles, the routes that check them, and what is stub versus planned are in [docs/AUTH.md](docs/AUTH.md).
+
 ## API overview
 
-- `POST /api/v1/tenants` (admin) · `GET /api/v1/tenants/me` · `GET /api/v1/tenants` (admin; includes `key_status`, not the secret)
+- `POST /api/v1/tenants` (admin) · `GET /api/v1/tenants/me` (includes `role`) · `GET /api/v1/tenants` (admin; includes `key_status` and `role`, not the secret)
+- `PUT /api/v1/tenants/{tenant_id}/role` (admin) sets `tenant_operator` or `tenant_readonly` for that tenant API key. See [docs/AUTH.md](docs/AUTH.md).
 - `POST /api/v1/tenants/me/api-key/rotate` and `POST /api/v1/tenants/me/api-key/revoke` (tenant bearer). Admin equivalents: `POST /api/v1/tenants/{tenant_id}/api-key/rotate` and `.../revoke`.
 - Rotate is a hard cutover. The response includes the new `api_key` once, and the previous bearer returns 401 on the next call. There is no grace window. Revoke returns 401 `Invalid API key` for that bearer (same error as an unknown key). The tenant cannot undo a revoke; an admin rotate on that tenant id mints a replacement. `tenant_api_key_audit` and process logs store a short prefix and a SHA-256, not the raw key.
 - `/api/v1/*` is rate limited in-process (default 120 requests / 60 seconds). Buckets are per tenant id, plus separate admin and unrecognized-bearer buckets. Over the limit the body is `{"detail":"Rate limit exceeded"}` with `Retry-After`. Counters reset when the process restarts and are not shared across workers. Redis is not used. `/health` is not limited.
@@ -350,7 +361,7 @@ Commercial-readiness work and the path toward a more discoverable project are tr
 Known gaps in this tree:
 
 - sqlite-vec is an optional `vec0` index (`PROAGENT_KB_VECTOR_STORE=sqlite_vec`, extra `vec`). It is not HNSW, and one KNN query returns at most 4096 neighbors. pgvector is not wired. Default search remains BM25. The default vector store remains the offline blob plus Python cosine. Remote embeddings are available with `PROAGENT_KB_EMBED_BACKEND=openai`.
-- OAuth / SSO, RBAC, and a shared quota service. Recommendation decisions write `recommendation_audit`. API key issue, rotate, and revoke write `tenant_api_key_audit`. `/api/v1` has an in-process rate-limit stub (no Redis).
+- A production IdP. Roles and an OIDC sketch are in [docs/AUTH.md](docs/AUTH.md): the default remains the admin key and tenant API keys, and `oidc` mode does not call an identity provider. Authorization-code login, JWKS verification, and gating every write route are still open. A shared quota service is not built. Recommendation decisions write `recommendation_audit`. API key issue, rotate, and revoke write `tenant_api_key_audit`. `/api/v1` has an in-process rate-limit stub (no Redis).
 - Multi-node deploy. SQLite stays a single-writer file. Schema migrations run on startup; backup and restore are in [docs/DATABASE.md](docs/DATABASE.md).
 - Recommendation executors beyond noop and one operator-configured webhook (no per-action code, no URL taken from the action payload)
 - A real evaluation harness (the learning loop is score nudges)
@@ -364,7 +375,7 @@ Known gaps in this tree:
 - Rotate any key that was pasted into chat or logs. `POST /api/v1/tenants/me/api-key/rotate` invalidates the previous tenant key immediately. `POST /api/v1/tenants/me/api-key/revoke` disables it until an admin calls `POST /api/v1/tenants/{tenant_id}/api-key/rotate`. Logs and `tenant_api_key_audit` keep a prefix and SHA-256, not the raw key.
 - The rate limit is a per-process stub. It is not a billing quota and it does not survive a restart. `GET /api/v1/usage` is a separate SQLite counter, also not a quota and not a charge.
 - OpenTelemetry span attributes include the tenant id, model name, and token count. They omit prompt text, knowledge-base query text, and API keys. Leave `PROAGENT_OTEL_ENABLED` false unless you intend to export that metadata.
-- Approve and execute are privileged. A tenant API key that can approve can trigger the configured executor. Treat that key like a write credential.
+- Approve and execute are privileged. A tenant API key with role `tenant_operator` (the default) can trigger the configured executor. `tenant_readonly` cannot approve, reject, execute, or rotate that key. Other write routes are not role-gated yet. Treat an operator key like a write credential. See [docs/AUTH.md](docs/AUTH.md).
 - `webhook` mode POSTs only to `PROAGENT_EXECUTOR_WEBHOOK_URL`. The recommendation `action` JSON is body data. It is not a URL, a shell command, or code. Redirects and environment proxies are disabled for that call.
 - Webhook receivers should treat `recommendation_id` as an idempotency key. A crash after a successful POST can retry the same recommendation.
 - Set `PROAGENT_EXECUTOR_MODE=off` when approve should record a decision and nothing else. Leave `PROAGENT_EXECUTOR_WEBHOOK_TOKEN` empty unless the receiver requires it. The token is not copied into the audit row or the API response.
