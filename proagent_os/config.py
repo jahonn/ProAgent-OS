@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     compaction_max_chars: int = Field(default=24_000, ge=512)
     compaction_keep_recent: int = Field(default=12, ge=1)
     compaction_summary_max_chars: int = Field(default=2000, ge=64)
+    # extractive (default): join/truncate, no model call, so mock CI stays offline.
+    # llm: summarize older turns with the configured chat provider (mock returns
+    # a deterministic string; openai uses the OpenAI-compatible client). On
+    # failure, fall back to extractive and record that on compaction meta/trace.
+    compaction_summarizer: Literal["extractive", "llm"] = "extractive"
 
     # Recommendation execution. noop acknowledges approval in-process (no network),
     # which is what the mock demo uses. webhook POSTs only to executor_webhook_url.
@@ -117,6 +122,7 @@ class Settings(BaseSettings):
         "executor_mode",
         "otel_exporter",
         "auth_mode",
+        "compaction_summarizer",
         mode="before",
     )
     @classmethod

@@ -49,6 +49,8 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_COMPACTION_MAX_CHARS", "24000")
     monkeypatch.setenv("PROAGENT_COMPACTION_KEEP_RECENT", "12")
     monkeypatch.setenv("PROAGENT_COMPACTION_SUMMARY_MAX_CHARS", "2000")
+    # Default extractive: compaction tests stay offline unless a case opts into llm.
+    monkeypatch.setenv("PROAGENT_COMPACTION_SUMMARIZER", "extractive")
     # Outer replan stub: default off so existing tests keep zero extra plan calls.
     monkeypatch.setenv("PROAGENT_REPLAN_ENABLED", "false")
     monkeypatch.setenv("PROAGENT_REPLAN_MAX", "1")

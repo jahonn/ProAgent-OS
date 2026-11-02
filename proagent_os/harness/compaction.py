@@ -8,17 +8,32 @@ Aligns with common agent-platform practice:
 * Anthropic long-context guidance: preserve recent tool results; compress
   older history rather than dropping everything.
 
-This module is a **stub**: the default summarizer is extractive
-(join + truncate). No live LLM and no tiktoken dependency. Inject a
-:class:`Summarizer` for a real model later.
+The default summarizer is extractive (join + truncate): no live LLM and no
+tiktoken dependency. ``PROAGENT_COMPACTION_SUMMARIZER=llm`` uses the configured
+chat provider (:class:`LlmSummarizer`); on failure it falls back to extractive
+and records that on compaction meta. Inject a :class:`Summarizer` to override.
 
 See docs/MEMORY.md and docs/ARCHITECTURE.md.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, runtime_checkable
+
+logger = logging.getLogger(__name__)
+
+# Short system prompt for the optional LLM summarizer. The mock provider
+# detects the leading sentence and returns MOCK_COMPACTION_SUMMARY.
+COMPACTION_SUMMARY_SYSTEM = (
+    "You summarize older conversation turns for a ProAgent session. "
+    "Reply with a short factual summary of only those turns. "
+    "Do not invent facts. Do not call tools. Do not add a preamble."
+)
 
 # Stored on conversation message rows; converted to system for LLM wire format.
 SUMMARY_ROLE = "summary"
@@ -57,6 +72,142 @@ class ExtractiveSummarizer:
         if len(text) > self.max_chars:
             return text[: self.max_chars - 3] + "..."
         return text
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Run ``coro`` from sync compaction code, including inside a live loop.
+
+    The orchestrator compacts from an async task. ``asyncio.run`` cannot nest,
+    so that path uses a worker thread with its own loop. Context vars (tenant
+    metering) are copied onto that thread. The OpenAI-compatible client opens
+    its own HTTP client inside ``chat``, so it is not bound to the caller loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    ctx = contextvars.copy_context()
+    box: Dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            box["result"] = ctx.run(asyncio.run, coro)
+        except BaseException as exc:
+            box["error"] = exc
+
+    thread = threading.Thread(target=_target, name="proagent-compaction-llm", daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+def _fallback_reason(exc: BaseException) -> str:
+    text = f"{type(exc).__name__}: {exc}"
+    text = " ".join(text.split())
+    if len(text) > 240:
+        return text[:237] + "..."
+    return text
+
+
+def _turns_as_text(messages: Sequence[Mapping[str, Any]], *, max_chars: int) -> str:
+    lines: List[str] = []
+    for msg in messages:
+        role = str(msg.get("role") or "unknown")
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 1000:
+            content = content[:997] + "..."
+        lines.append(f"{role}: {content}")
+    text = "\n".join(lines) if lines else "(empty)"
+    budget = max(2000, int(max_chars) * 6)
+    if len(text) > budget:
+        return "...\n" + text[-budget:]
+    return text
+
+
+class LlmSummarizer:
+    """Summarize older turns with the configured chat provider.
+
+    Default provider is :func:`proagent_os.llm.factory.get_llm` (mock in CI,
+    OpenAI-compatible when ``PROAGENT_LLM_PROVIDER=openai`` and a key is set).
+    Pass ``provider`` in tests. Any failure, including an empty completion,
+    falls back to :class:`ExtractiveSummarizer`. ``last_mode`` /
+    ``last_fallback`` are copied onto compaction meta by :func:`compact_messages`.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_chars: int = 2000,
+        provider: Any = None,
+        fallback: Optional[ExtractiveSummarizer] = None,
+    ) -> None:
+        self.max_chars = max(64, int(max_chars))
+        self._provider = provider
+        self.fallback = fallback or ExtractiveSummarizer(max_chars=self.max_chars)
+        self.last_mode: str = "llm"
+        self.last_fallback: Optional[str] = None
+
+    def summarize(self, messages: Sequence[Mapping[str, Any]]) -> str:
+        self.last_mode = "llm"
+        self.last_fallback = None
+        try:
+            text = _run_coro_sync(self._complete(messages))
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("empty compaction summary")
+            text = text.strip()
+            if len(text) > self.max_chars:
+                text = text[: self.max_chars - 3] + "..."
+            return text
+        except Exception as exc:
+            self.last_mode = "extractive_fallback"
+            self.last_fallback = _fallback_reason(exc)
+            logger.warning(
+                "compaction llm summarizer failed; using extractive fallback (%s)",
+                self.last_fallback,
+            )
+            return self.fallback.summarize(messages)
+
+    async def _complete(self, messages: Sequence[Mapping[str, Any]]) -> str:
+        from proagent_os.llm.base import LLMMessage
+        from proagent_os.llm.factory import get_llm
+
+        provider = self._provider if self._provider is not None else get_llm()
+        response = await provider.chat(
+            [
+                LLMMessage(role="system", content=COMPACTION_SUMMARY_SYSTEM),
+                LLMMessage(
+                    role="user",
+                    content=(
+                        "Summarize these older turns:\n\n"
+                        + _turns_as_text(messages, max_chars=self.max_chars)
+                    ),
+                ),
+            ],
+            temperature=0.0,
+            max_tokens=min(1024, max(128, self.max_chars // 2)),
+            tools=None,
+            tool_choice=None,
+        )
+        content = getattr(response, "content", None)
+        return "" if content is None else str(content)
+
+
+def summarizer_for_settings(settings: Any, *, max_chars: int) -> Optional[Summarizer]:
+    """Return an LLM summarizer when the flag is ``llm``; otherwise ``None``.
+
+    ``None`` lets :func:`compact_messages` keep the extractive default so the
+    unset / ``extractive`` path does not change.
+    """
+    mode = str(getattr(settings, "compaction_summarizer", "extractive") or "extractive")
+    mode = mode.strip().lower()
+    if mode == "llm":
+        return LlmSummarizer(max_chars=max_chars)
+    return None
 
 
 @dataclass(frozen=True)
@@ -199,19 +350,33 @@ def compact_messages(
     summarizer = summarizer or ExtractiveSummarizer(max_chars=cfg.summary_max_chars)
     # Fold prior summary text into the new summary so we do not lose it.
     fold_input: List[Mapping[str, Any]] = list(prior_summaries) + list(older)
-    summary_text = summarizer.summarize(fold_input) if fold_input else ""
+    summary_mode: Optional[str] = None
+    summary_fallback: Optional[str] = None
+    if fold_input:
+        summary_text = summarizer.summarize(fold_input)
+        # Only the LLM summarizer sets these. Extractive stays free of extra keys.
+        summary_mode = getattr(summarizer, "last_mode", None)
+        summary_fallback = getattr(summarizer, "last_fallback", None)
+    else:
+        summary_text = ""
+
+    summary_meta: Dict[str, Any] = {
+        "compaction": True,
+        "dropped_count": len(older),
+        "kept_recent": len(recent),
+        "strategy": "keep_system_last_n_fold_older",
+        "summarizer": type(summarizer).__name__,
+        "approx_chars_before": approx_chars(list(messages)),
+    }
+    if summary_mode:
+        summary_meta["summarizer_mode"] = summary_mode
+    if summary_fallback:
+        summary_meta["summarizer_fallback"] = summary_fallback
 
     summary_msg: Dict[str, Any] = {
         "role": SUMMARY_ROLE,
         "content": summary_text,
-        "meta": {
-            "compaction": True,
-            "dropped_count": len(older),
-            "kept_recent": len(recent),
-            "strategy": "keep_system_last_n_fold_older",
-            "summarizer": type(summarizer).__name__,
-            "approx_chars_before": approx_chars(list(messages)),
-        },
+        "meta": summary_meta,
     }
 
     out: List[Dict[str, Any]] = list(system_only) + [summary_msg] + list(recent)
