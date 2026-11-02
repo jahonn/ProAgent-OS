@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     # failure, fall back to extractive and record that on compaction meta/trace.
     compaction_summarizer: Literal["extractive", "llm"] = "extractive"
 
+    # Golden-task eval score. ordered_subset (default) is the offline trajectory
+    # matcher and does not call a model, so CI stays deterministic.
+    # llm: after that check, one chat completion scores expected vs actual tools
+    # plus the final answer. Mock returns deterministic JSON. On failure or
+    # unparseable output, keep the ordered_subset pass/fail and set
+    # judge_mode=ordered_subset_fallback. See docs/EVAL.md.
+    eval_judge: Literal["ordered_subset", "llm"] = "ordered_subset"
+
     # Recommendation execution. noop acknowledges approval in-process (no network),
     # which is what the mock demo uses. webhook POSTs only to executor_webhook_url.
     # off records the decision and does not call an executor.
@@ -123,6 +131,7 @@ class Settings(BaseSettings):
         "otel_exporter",
         "auth_mode",
         "compaction_summarizer",
+        "eval_judge",
         mode="before",
     )
     @classmethod
