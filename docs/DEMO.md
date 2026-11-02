@@ -140,6 +140,14 @@ uvicorn proagent_os.main:app --host 0.0.0.0 --port 8080
 - http://localhost:8080/health — `{"status":"ok","version":"0.1.1","llm":"mock"}` when the provider is mock.
 - http://localhost:8080/docs — FastAPI reference for `/api/v1/*`.
 
+### Human in the loop on the task console
+
+The task console lists recent tasks from `GET /api/v1/tasks`. A row in `awaiting_human` shows that badge and the pause reason. **Resume** and **Reject** are on the card only when the saved key is a tenant operator (`recommendation.decide`). A readonly key or the admin key can read the row and does not get those buttons. **Reject** cancels the run and does not execute the gated tool. **Resume** approves it. With the mock provider and the default noop executor, nothing is sent to the network.
+
+**Run mock approval** fills the task box with text that includes the marker `proagent-hitl-demo` and runs it. The mock planner pauses on `request_run_approval` before that tool's body runs. The card's `hitl_execute_receipts` list is empty until **Resume**. After **Resume**, the same list shows the tool name and status (`succeeded` on this path). Raw arguments are not shown. If a receipt is still `started`, the card adds a checkbox to send `reexecute` with Resume; leave it unchecked and Resume stays fail-closed.
+
+Other task text does not include that marker, so `python scripts/demo.py` still completes.
+
 Recommendations for this tenant: one `executed` (the monitor, via the noop executor) and one `pending` (the analyst tool call). The dashboard tab shows the same outcome metric as the script.
 
 Optional worker, same environment so it shares the file:
