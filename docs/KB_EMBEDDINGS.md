@@ -20,7 +20,7 @@ export PROAGENT_KB_EMBED_BASE_URL=https://api.openai.com/v1
 ```
 
 The base URL must be an OpenAI-compatible `/v1` API root. If
-`PROAGENT_KB_EMBED_BASE_URL` is empty, Pulse uses
+`PROAGENT_KB_EMBED_BASE_URL` is empty, ProAgent OS uses
 `PROAGENT_LLM_BASE_URL`. If `PROAGENT_KB_EMBED_API_KEY` is empty, it uses
 `PROAGENT_LLM_API_KEY`. The configured model and dimensions are sent in each
 embeddings request. Check the provider's supported dimensions for the selected
@@ -29,7 +29,7 @@ model.
 When this backend is selected and retrieval is `hybrid` or `vector`, chunk
 text and search queries are sent to the configured embeddings endpoint. A
 missing base URL, API key, or model, or a failed API request, returns HTTP 503
-from the knowledge-base ingest and search endpoints. Pulse does not silently
+from the knowledge-base ingest and search endpoints. ProAgent OS does not silently
 switch to the stub. BM25 does not call the embedder, even when the backend is
 set to `openai`.
 
