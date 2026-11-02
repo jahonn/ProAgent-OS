@@ -18,7 +18,10 @@ flowchart LR
   tool -->|observe results| specialist
   specialist -->|final text| more{More plan steps?}
   more -->|yes| specialist
-  more -->|no| agg[AGGREGATE]
+  more -->|no| replan{Replan trigger?}
+  replan -->|yes capped| plan2[REPLAN]
+  plan2 --> specialist
+  replan -->|no| agg[AGGREGATE]
   agg --> out[Task result + trace]
 ```
 
@@ -28,6 +31,7 @@ flowchart LR
 | Specialist | `specialist` | Researcher / analyst / vertical | One LLM turn; may request tools |
 | Tool | `tool` | Tool registry | Execute, return observation to the specialist |
 | Aggregate | `aggregate` | Aggregator (text-only) | Synthesize step results |
+| Replan | `replan` | Planner again (optional) | After specialists; heuristic triggers; capped |
 
 Constants: `LoopPhase` in `proagent_os/harness/loop.py`. Orchestrator writes
 trace rows through `event(...)`. Helpers `tool_trajectory` / `summarize_run`
@@ -102,8 +106,9 @@ Trace phase `hitl` (`LoopPhase.HITL`). Proactive `emit_recommendation` is unchan
 | Session / context compaction | OpenAI sessions + Anthropic long-context practice | See MEMORY.md |
 
 ProAgent’s planner → specialists → aggregator is closest to **plan-and-execute**;
-each specialist’s tool rounds are a **ReAct-style** inner loop. We do not vendor
-LangGraph/CrewAI; we keep a small FastAPI + SQLite product shell.
+each specialist’s tool rounds are a **ReAct-style** inner loop; optional
+`LoopPhase.REPLAN` is the outer revise ring (Plan-and-Solve shaped). We do not
+vendor LangGraph/CrewAI; we keep a small FastAPI + SQLite product shell.
 
 
 ## Session / context compaction (stub)
@@ -132,6 +137,34 @@ flowchart LR
 Details and env knobs: [MEMORY.md](MEMORY.md).
 
 
+
+## Plan-and-replan outer loop (stub)
+
+Aligns with **LangGraph plan-and-execute** (execute then optionally replan) and
+**Plan-and-Solve** (arxiv 2305.04091: revise the plan). The specialist
+ReAct-style tool loop is unchanged; this is the OUTER planner ring.
+
+```mermaid
+flowchart LR
+  steps[Specialist steps done] --> trig{Trigger?}
+  trig -->|empty plan / empty or failed results / force| cap{attempt < max?}
+  trig -->|sufficient or disabled| agg[AGGREGATE]
+  cap -->|yes| replan[REPLAN: planner + prior plan + observations]
+  cap -->|no| agg
+  replan --> steps
+```
+
+| Piece | Now (stub) | Planned |
+| --- | --- | --- |
+| Knob | `PROAGENT_REPLAN_ENABLED` default **false** (zero behavior change); `PROAGENT_REPLAN_MAX` default 1; `PROAGENT_REPLAN_FORCE` fixtures/demos only | Per-tenant / per-vertical policy |
+| Triggers | Empty plan; empty step results; empty aggregate inputs; all steps failed (heuristic); force | LLM judge of sufficiency; structured critique |
+| Planner input | Prior plan JSON + observations summary | Diff-aware revision; step-level retry only |
+| Trace | `LoopPhase.REPLAN` decision event + planner output (`replan: true`) | Cost / latency budgets on replan ring |
+| Scope | Whole-plan re-call then re-run steps | DAG replanning; skip succeeded steps |
+
+Code: `proagent_os/harness/replan.py`, hooks in `orchestrator.py`. HITL pause
+still short-circuits the replan ring (human decides next).
+
 ## Tool schema hardening (stub)
 
 Arguments from the model are checked against each tool's `parameters` JSON schema
@@ -150,6 +183,7 @@ Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
 | Task-run HITL pause/resume stub (`awaiting_human`) | Mid-run continue after approve; dedicated task audit |
 | Session / conversation compaction stub (`summary` + keep last N) | LLM summarizer, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
+| Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |
 | Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)

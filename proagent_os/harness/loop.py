@@ -1,6 +1,6 @@
 """Typed agent-loop phases and trajectory helpers.
 
-ProAgent OS outer loop is plan → specialist (inner tool rounds) → aggregate.
+ProAgent OS outer loop is plan → specialist (inner tool rounds) → [optional replan] → aggregate.
 That matches industry "agent harness" practice:
 
 * OpenAI Agents SDK runner: model → tool calls → continue / final output
@@ -32,6 +32,7 @@ class LoopPhase(str, Enum):
     AGGREGATE = "aggregate"
     HITL = "hitl"
     COMPACTION = "compaction"
+    REPLAN = "replan"
 
 
 # Documented outer-loop order (specialist may emit many TOOL rows between).

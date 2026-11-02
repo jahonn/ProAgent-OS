@@ -11,6 +11,7 @@ from proagent_os.harness.hitl import RunPaused, TaskHitlService, sanitize_pendin
 from proagent_os.harness.loop import LoopPhase, event
 from proagent_os.harness.memory import ConversationMemory
 from proagent_os.harness.registry import AgentRegistry
+from proagent_os.harness.replan import observations_summary, should_replan
 from proagent_os.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall
 from proagent_os.metering import bind_tenant, unbind_tenant
 from proagent_os.professional.brand.store import BrandStore
@@ -76,6 +77,10 @@ class Orchestrator:
     Trace phases use :class:`~proagent_os.harness.loop.LoopPhase` (see
     ``docs/ARCHITECTURE.md``). Specialist steps still run an inner
     model→tool→observe loop up to ``max_tool_rounds``.
+
+    Optional outer **plan-and-replan** ring (``PROAGENT_REPLAN_*``, default off):
+    after specialist steps, heuristic triggers may re-call the planner with the
+    prior plan + observations (capped by ``replan_max``).
     """
 
     def __init__(
@@ -168,6 +173,7 @@ class Orchestrator:
                 )
             )
 
+        settings = get_settings()
         plan = await self._plan(input_text, brand_block, trace, prior_context=prior_block)
         self.db.update(
             "tasks",
@@ -179,68 +185,112 @@ class Orchestrator:
         step_results: List[Dict[str, Any]] = []
         ctx = ToolContext(tenant_id=tenant_id, task_id=task_id)
         hitl = TaskHitlService()
-        try:
-            for step in plan.get("steps", []):
-                agent_id = step.get("agent", "researcher")
-                goal = step.get("goal", input_text)
-                result = await self._run_specialist(
-                    agent_id,
-                    goal,
-                    input_text,
-                    brand_block,
-                    ctx,
-                    trace,
-                    prior_context=prior_block,
+        replan_attempt = 0
+        while True:
+            step_results = []
+            try:
+                for step in plan.get("steps", []):
+                    agent_id = step.get("agent", "researcher")
+                    goal = step.get("goal", input_text)
+                    result = await self._run_specialist(
+                        agent_id,
+                        goal,
+                        input_text,
+                        brand_block,
+                        ctx,
+                        trace,
+                        prior_context=prior_block,
+                    )
+                    step_results.append({"agent": agent_id, "goal": goal, "result": result})
+            except RunPaused as paused:
+                # Persist plan + partial specialist results, then await human.
+                # HITL pause short-circuits replan (human decides next).
+                partial = ""
+                if step_results:
+                    partial = json.dumps(step_results, ensure_ascii=False, default=str)[:4000]
+                # Flush current trace into the row before pause helper appends HITL event.
+                self.db.update(
+                    "tasks",
+                    {
+                        "plan_json": dumps(plan),
+                        "trace_json": dumps(trace),
+                        "result": partial,
+                        "updated_at": utcnow(),
+                    },
+                    "id=?",
+                    (task_id,),
                 )
-                step_results.append({"agent": agent_id, "goal": goal, "result": result})
-        except RunPaused as paused:
-            # Persist plan + partial specialist results, then await human.
-            partial = ""
-            if step_results:
-                partial = json.dumps(step_results, ensure_ascii=False, default=str)[:4000]
-            # Flush current trace into the row before pause helper appends HITL event.
+                paused_row = hitl.pause_task(
+                    tenant_id,
+                    task_id,
+                    reason=paused.reason,
+                    pending_action=paused.pending_action,
+                    actor="orchestrator",
+                    trace_extra={
+                        "agent": paused.agent_id,
+                        "tool": paused.tool_name,
+                        "tool_call_id": paused.tool_call_id,
+                    },
+                    plan=plan,
+                    partial_result=partial,
+                )
+                self.memory.add_message(
+                    conversation_id,
+                    "assistant",
+                    f"[awaiting_human] {paused.reason}",
+                    meta={"task_id": task_id, "status": "awaiting_human"},
+                )
+                return {
+                    "task_id": task_id,
+                    "conversation_id": conversation_id,
+                    "status": paused_row["status"],
+                    "plan": plan,
+                    "result": paused_row.get("result") or "",
+                    "trace": paused_row.get("trace") or [],
+                    "pause_reason": paused_row.get("pause_reason") or paused.reason,
+                    "pending_action": paused_row.get("pending_action") or {},
+                    "hitl": "stub",
+                }
+
+            do_replan, reason = should_replan(
+                plan,
+                step_results,
+                enabled=settings.replan_enabled,
+                attempt=replan_attempt,
+                max_replans=settings.replan_max,
+                force=settings.replan_force,
+            )
+            if not do_replan:
+                break
+
+            obs = observations_summary(plan, step_results)
+            next_attempt = replan_attempt + 1
+            trace.append(
+                event(
+                    LoopPhase.REPLAN,
+                    attempt=next_attempt,
+                    reason=reason,
+                    prior_steps=len(plan.get("steps") or []),
+                    prior_step_results=len(step_results),
+                    observations_preview=obs[:500],
+                )
+            )
+            plan = await self._plan(
+                input_text,
+                brand_block,
+                trace,
+                prior_context=prior_block,
+                phase=LoopPhase.REPLAN,
+                prior_plan=plan,
+                observations=obs,
+            )
+            replan_attempt = next_attempt
             self.db.update(
                 "tasks",
-                {
-                    "plan_json": dumps(plan),
-                    "trace_json": dumps(trace),
-                    "result": partial,
-                    "updated_at": utcnow(),
-                },
+                {"plan_json": dumps(plan), "updated_at": utcnow()},
                 "id=?",
                 (task_id,),
             )
-            paused_row = hitl.pause_task(
-                tenant_id,
-                task_id,
-                reason=paused.reason,
-                pending_action=paused.pending_action,
-                actor="orchestrator",
-                trace_extra={
-                    "agent": paused.agent_id,
-                    "tool": paused.tool_name,
-                    "tool_call_id": paused.tool_call_id,
-                },
-                plan=plan,
-                partial_result=partial,
-            )
-            self.memory.add_message(
-                conversation_id,
-                "assistant",
-                f"[awaiting_human] {paused.reason}",
-                meta={"task_id": task_id, "status": "awaiting_human"},
-            )
-            return {
-                "task_id": task_id,
-                "conversation_id": conversation_id,
-                "status": paused_row["status"],
-                "plan": plan,
-                "result": paused_row.get("result") or "",
-                "trace": paused_row.get("trace") or [],
-                "pause_reason": paused_row.get("pause_reason") or paused.reason,
-                "pending_action": paused_row.get("pending_action") or {},
-                "hitl": "stub",
-            }
 
         final = await self._aggregate(input_text, step_results, brand_block, trace)
 
@@ -273,13 +323,27 @@ class Orchestrator:
         trace: List[Dict[str, Any]],
         *,
         prior_context: str = "",
+        phase: LoopPhase = LoopPhase.PLAN,
+        prior_plan: Optional[Dict[str, Any]] = None,
+        observations: str = "",
     ) -> Dict[str, Any]:
         planner = self.agents.get("planner")
         system = (planner.system_prompt if planner else "") or (
             "You are the Planner agent. Create a short plan as JSON with keys "
             "`steps` (list of {agent, goal, tools}) and `summary`."
         )
+        if phase == LoopPhase.REPLAN or prior_plan is not None:
+            system += (
+                " Revise the plan given the prior plan and observations. "
+                "Return JSON with the same `steps` / `summary` shape."
+            )
         user_content = f"Task: {task}\n\nAvailable agents: {[a.id for a in self.agents.list()]}"
+        if prior_plan is not None:
+            user_content += (
+                f"\n\nPrior plan:\n{json.dumps(prior_plan, ensure_ascii=False, default=str)[:3000]}"
+            )
+        if observations:
+            user_content += f"\n\nObservations from executed steps:\n{observations[:4000]}"
         if prior_context:
             user_content = (
                 f"Prior conversation (compacted):\n{prior_context}\n\n{user_content}"
@@ -296,7 +360,15 @@ class Orchestrator:
             ],
             "summary": "Default two-step plan",
         }
-        trace.append(event(LoopPhase.PLAN, model=resp.model, raw=(resp.content or "")[:2000], parsed=parsed))
+        trace.append(
+            event(
+                phase,
+                model=resp.model,
+                raw=(resp.content or "")[:2000],
+                parsed=parsed,
+                replan=(phase == LoopPhase.REPLAN),
+            )
+        )
         return parsed
 
     async def _run_specialist(

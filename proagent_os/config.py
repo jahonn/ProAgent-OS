@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # See docs/TOOLS.md.
     tool_schema_strict: bool = True
 
+    # Outer plan-and-replan loop (stub). Default off = zero behavior change vs
+    # prior releases. When enabled, after specialist steps, heuristic triggers
+    # (empty plan, empty/failed step results) may call the planner again with
+    # prior plan + observations, capped by replan_max. Inner ReAct tool loop
+    # unchanged. See docs/ARCHITECTURE.md.
+    replan_enabled: bool = False
+    replan_max: int = Field(default=1, ge=0)
+    # Test/demo only: force one replan cycle while attempt < replan_max.
+    # Production should leave this false and rely on heuristic triggers.
+    replan_force: bool = False
+
 
     # Session / conversation compaction (stub). Summarize older turns; keep a
     # recent raw window. Default summarizer is extractive (no live LLM).

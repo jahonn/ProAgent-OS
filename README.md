@@ -78,13 +78,14 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 | Proactive HITL | Interval monitors file recommendations; approve can run a noop or one configured webhook | Human-input steps you add to your graph | Human-input steps you add to your crew or flow |
 | Task-run HITL | Stub: pause run to `awaiting_human`, resume/reject via API (OpenAI interruption / Anthropic confirm-action shaped) | Interrupt / human-in-the-loop nodes you wire | Human-input / approval steps you add |
 | Session compaction | Stub: summarize older turns, keep last N raw (`PROAGENT_COMPACTION_*`) | Session / thread memory you configure | Memory / context window tools you add |
+| Plan-and-replan | Stub: optional outer replan after specialists (`PROAGENT_REPLAN_*`, default off) | Plan-and-execute / replan nodes you wire | Crew replanning you add |
 | Outcome loop | `record_outcome` stores a metric and nudges a skill weight | Evaluation in the tools you place around the library | Evaluation in the tools you place around the library |
 | Tenancy | FastAPI `/api/v1` and one Bearer API key per tenant | Your service owns auth and tenancy | Your service owns auth and tenancy |
 | This release | v0.1.0 early MVP. Approve can run a noop or a configured webhook. It does not run action code | Large ecosystem; production shape is yours | Large ecosystem; production shape is yours |
 
 ## Architecture
 
-Harness loop phases, industry mapping, task-run HITL pause/resume stub, session/context compaction stub, tool schema hardening, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md). Tool JSON-schema validation: [docs/TOOLS.md](docs/TOOLS.md).
+Harness loop phases, industry mapping, task-run HITL pause/resume stub, session/context compaction stub, tool schema hardening, plan-and-replan outer loop stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` / `replan` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md). Tool JSON-schema validation: [docs/TOOLS.md](docs/TOOLS.md).
 
 Planner and aggregator stay text-only. Specialists call tools natively, for up to `PROAGENT_MAX_TOOL_ROUNDS` rounds (JSON-in-content is still accepted).
 
@@ -94,6 +95,7 @@ flowchart TB
 
   subgraph harness ["Agent harness"]
     planner["Planner"] --> specialists["Specialists: researcher, analyst, vertical"]
+    specialists -->|"optional REPLAN stub"| planner
     specialists --> aggregator["Aggregator"]
   end
 
@@ -178,6 +180,9 @@ docker compose up --build
 | `PROAGENT_LLM_MODEL` | `gpt-4o-mini` | Model id |
 | `PROAGENT_MAX_TOOL_ROUNDS` | `8` | Max tool rounds per specialist |
 | `PROAGENT_TOOL_SCHEMA_STRICT` | `true` | Validate tool args against JSON schema before execute ([TOOLS.md](docs/TOOLS.md)) |
+| `PROAGENT_REPLAN_ENABLED` | `false` | Outer plan-and-replan stub; default off = zero behavior change ([ARCHITECTURE.md](docs/ARCHITECTURE.md)) |
+| `PROAGENT_REPLAN_MAX` | `1` | Max replan cycles per task when enabled |
+| `PROAGENT_REPLAN_FORCE` | `false` | Fixture/demo only: force replan while under max |
 | `PROAGENT_EXECUTOR_MODE` | `noop` | `off`, `noop`, or `webhook` |
 | `PROAGENT_EXECUTOR_ON_APPROVE` | `true` | Run the executor as part of approve when mode is not `off` |
 | `PROAGENT_EXECUTOR_WEBHOOK_URL` | empty | Absolute http(s) URL. Required for `webhook`. This is the only request target |
