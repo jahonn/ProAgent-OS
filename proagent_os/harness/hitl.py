@@ -45,6 +45,11 @@ ack and do not run the tool. Without a checkpoint, or when the continue flag
 is false, approve still marks ``completed`` (legacy stub) and does not run
 the tool. Reject cancels ``awaiting_human``, and also a ``running`` task that
 still has an open checkpoint. It never executes the gated tool.
+
+``GET /api/v1/tasks/{id}`` and the task list return
+:func:`public_execute_receipt` summaries so an operator can see
+``started`` / ``succeeded`` / ``failed`` without opening SQLite. That read
+does not claim a receipt, call ``invoke``, or change this path.
 """
 
 from __future__ import annotations
@@ -249,6 +254,150 @@ def observation_snippet(payload: Dict[str, Any]) -> str:
         return encoded
     clipped["output"] = {"_truncated": True, "preview": preview[:1000]}
     return dumps(clipped)
+
+
+# Operator read model for hitl_execute_receipts. Not used by claim/invoke.
+FINGERPRINT_PREFIX_LEN = 12
+PUBLIC_RECEIPT_LIMIT = 50
+_PUBLIC_OBSERVATION_CHARS = 1000
+_PUBLIC_ERROR_CHARS = 500
+_PUBLIC_STRING_CHARS = 240
+_PUBLIC_OBJECT_KEYS = 40
+_PUBLIC_LIST_ITEMS = 20
+_REDACTED = "[redacted]"
+_SECRET_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "args",
+        "arguments",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "password",
+        "passwd",
+        "private_key",
+        "raw_args",
+        "raw_arguments",
+        "secret",
+        "session",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+    }
+)
+_SECRET_KEY_SUFFIXES = ("_api_key", "_secret", "_token", "_password")
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)("
+    r"sk-[A-Za-z0-9_\-]{8,}|"
+    r"pk_[A-Za-z0-9_\-]{8,}|"
+    r"ghp_[A-Za-z0-9]{8,}|"
+    r"github_pat_[A-Za-z0-9_]{8,}|"
+    r"xox[baprs]-[A-Za-z0-9\-]+|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"Bearer\s+\S+"
+    r")"
+)
+
+
+def _is_secret_key(name: str) -> bool:
+    key = name.strip().lower().replace("-", "_")
+    if key in _SECRET_KEYS:
+        return True
+    return any(key.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
+
+
+def _redact_public_text(text: str, *, limit: int) -> str:
+    cleaned = _SECRET_VALUE_RE.sub(_REDACTED, text)
+    if len(cleaned) > limit:
+        return cleaned[: limit - 3] + "..."
+    return cleaned
+
+
+def _redact_public_value(value: Any, *, depth: int = 0) -> Any:
+    """Copy JSON-ish data with secret-like keys and token-shaped strings removed."""
+    if depth > 8:
+        return {"_truncated": True}
+    if isinstance(value, dict):
+        redacted: Dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _PUBLIC_OBJECT_KEYS:
+                redacted["_truncated"] = True
+                break
+            name = str(key)
+            if _is_secret_key(name):
+                redacted[name] = _REDACTED
+            else:
+                redacted[name] = _redact_public_value(item, depth=depth + 1)
+        return redacted
+    if isinstance(value, list):
+        items = [
+            _redact_public_value(item, depth=depth + 1)
+            for item in value[:_PUBLIC_LIST_ITEMS]
+        ]
+        if len(value) > _PUBLIC_LIST_ITEMS:
+            items.append({"_truncated": True})
+        return items
+    if isinstance(value, str):
+        return _redact_public_text(value, limit=_PUBLIC_STRING_CHARS)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _redact_public_text(str(value), limit=_PUBLIC_STRING_CHARS)
+
+
+def _public_observation(raw: str) -> tuple[Any, bool]:
+    parsed = loads(raw or "", {})
+    if not isinstance(parsed, (dict, list)):
+        parsed = {}
+    redacted = _redact_public_value(parsed)
+    encoded = dumps(redacted)
+    if len(encoded) <= _PUBLIC_OBSERVATION_CHARS:
+        return redacted, False
+    preview = encoded[:400]
+    ok = redacted.get("ok") if isinstance(redacted, dict) else None
+    err = None
+    if isinstance(redacted, dict) and isinstance(redacted.get("error"), str):
+        err = redacted["error"]
+    return {
+        "ok": ok,
+        "error": err,
+        "output": {"_truncated": True, "preview": preview},
+    }, True
+
+
+def public_execute_receipt(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Safe summary of one ``hitl_execute_receipts`` row.
+
+    Includes the tool name, a fingerprint prefix, ``args_hash``, status, and
+    timestamps. The raw argument object is not a column and is not added here.
+    The full fingerprint is omitted. Observation and error are capped, and
+    secret-like values are replaced with ``[redacted]``.
+    """
+    observation, truncated = _public_observation(str(row.get("observation_json") or ""))
+    tool_call_id = _redact_public_text(str(row.get("tool_call_id") or ""), limit=128)
+    fingerprint = str(row.get("fingerprint") or "")
+    return {
+        "id": str(row.get("id") or ""),
+        "tool_name": str(row.get("tool_name") or "")[:64],
+        "tool_call_id": tool_call_id,
+        "fingerprint_prefix": fingerprint[:FINGERPRINT_PREFIX_LEN],
+        "args_hash": str(row.get("args_hash") or ""),
+        "status": str(row.get("status") or ""),
+        "created_at": str(row.get("created_at") or ""),
+        "updated_at": str(row.get("updated_at") or ""),
+        "error": _redact_public_text(str(row.get("error") or ""), limit=_PUBLIC_ERROR_CHARS),
+        "observation": observation,
+        "observation_truncated": truncated,
+    }
+
+
+def public_execute_receipts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Summaries, oldest first. Keeps the latest ``PUBLIC_RECEIPT_LIMIT`` rows."""
+    if len(rows) > PUBLIC_RECEIPT_LIMIT:
+        rows = rows[-PUBLIC_RECEIPT_LIMIT:]
+    return [public_execute_receipt(row) for row in rows]
 
 
 def checkpoint_is_resumable(checkpoint: Any) -> bool:
@@ -466,6 +615,44 @@ class TaskHitlService:
             "ORDER BY created_at",
             (tenant_id, task_id),
         )
+
+    def list_execute_receipts_many(
+        self, keys: List[tuple[str, str]]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Raw rows for many tasks. Read-only; does not claim or invoke.
+
+        ``keys`` are ``(tenant_id, task_id)``. A row is included only when
+        both match, so a receipt stored under another tenant is dropped.
+        Grouped by task id, oldest first. One indexed query per chunk.
+        """
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        allowed = set()
+        task_ids: List[str] = []
+        seen = set()
+        for tenant_id, task_id in keys:
+            allowed.add((tenant_id, task_id))
+            grouped.setdefault(task_id, [])
+            if task_id not in seen:
+                seen.add(task_id)
+                task_ids.append(task_id)
+        if not task_ids:
+            return grouped
+        chunk_size = 200
+        for start in range(0, len(task_ids), chunk_size):
+            chunk = task_ids[start : start + chunk_size]
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self.db.fetchall(
+                "SELECT * FROM hitl_execute_receipts WHERE task_id IN ("
+                + placeholders
+                + ") ORDER BY created_at",
+                tuple(chunk),
+            )
+            for row in rows:
+                pair = (row.get("tenant_id"), row.get("task_id"))
+                if pair not in allowed:
+                    continue
+                grouped[str(row.get("task_id"))].append(row)
+        return grouped
 
     def claim_execute_receipt(
         self,

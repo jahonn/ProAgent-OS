@@ -4,8 +4,18 @@ from fastapi import APIRouter, HTTPException
 
 from proagent_os.auth import TenantDep, enforce
 from proagent_os.db import get_db, loads
-from proagent_os.harness.hitl import HitlExecuteBlocked
-from proagent_os.models.schemas import TaskCreate, TaskHitlNote, TaskPause
+from proagent_os.harness.hitl import (
+    HitlExecuteBlocked,
+    TaskHitlService,
+    public_execute_receipts,
+)
+from proagent_os.models.schemas import (
+    TaskCreate,
+    TaskHitlNote,
+    TaskListItem,
+    TaskPause,
+    TaskRead,
+)
 from proagent_os.rbac import Permission
 from proagent_os.services import get_services
 
@@ -30,6 +40,24 @@ def _get_owned_task(task_id: str, tenant: dict) -> dict:
     return row
 
 
+def _with_execute_receipts(rows: list[dict]) -> list[dict]:
+    """Attach safe execute-receipt summaries. One indexed read for the page.
+
+    Scope is the task's own ``tenant_id`` (already enforced by the caller).
+    This does not claim a receipt or invoke a tool.
+    """
+    keys = [(str(row["tenant_id"]), str(row["id"])) for row in rows]
+    grouped = TaskHitlService().list_execute_receipts_many(keys)
+    enriched: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["hitl_execute_receipts"] = public_execute_receipts(
+            grouped.get(item["id"], [])
+        )
+        enriched.append(item)
+    return enriched
+
+
 @router.post("")
 async def create_task(body: TaskCreate, tenant: TenantDep) -> dict:
     if tenant.get("is_admin"):
@@ -43,26 +71,41 @@ async def create_task(body: TaskCreate, tenant: TenantDep) -> dict:
     return result
 
 
-@router.get("")
+@router.get("", response_model=list[TaskListItem])
 def list_tasks(tenant: TenantDep, limit: int = 50) -> list:
+    """List tasks for this tenant. Admin sees every tenant.
+
+    Each item includes ``hitl_execute_receipts``: tool name, fingerprint
+    prefix, args hash, status, timestamps, and a capped observation and
+    error. Raw arguments are omitted. Same read access as this list.
+    """
     tid = tenant["id"]
     if tenant.get("is_admin"):
-        return get_db().fetchall(
+        rows = get_db().fetchall(
             "SELECT id, tenant_id, status, input, pause_reason, hitl_decision, "
             "created_at, updated_at FROM tasks ORDER BY created_at DESC LIMIT ?",
             (limit,),
         )
-    return get_db().fetchall(
-        "SELECT id, tenant_id, status, input, pause_reason, hitl_decision, "
-        "created_at, updated_at FROM tasks WHERE tenant_id=? ORDER BY created_at DESC LIMIT ?",
-        (tid, limit),
-    )
+    else:
+        rows = get_db().fetchall(
+            "SELECT id, tenant_id, status, input, pause_reason, hitl_decision, "
+            "created_at, updated_at FROM tasks WHERE tenant_id=? ORDER BY created_at DESC LIMIT ?",
+            (tid, limit),
+        )
+    return _with_execute_receipts(rows)
 
 
-@router.get("/{task_id}")
+@router.get("/{task_id}", response_model=TaskRead)
 def get_task(task_id: str, tenant: TenantDep) -> dict:
+    """Return one task, including ``hitl_execute_receipts``.
+
+    Same tenant scope as before: the owning tenant (operator or readonly)
+    or the admin key. Another tenant receives 404. The receipt array is a
+    summary (fingerprint prefix, tool name, status, timestamps, capped
+    observation and error). It does not include raw arguments or secrets.
+    """
     row = _get_owned_task(task_id, tenant)
-    return _decode_task_row(row)
+    return _with_execute_receipts([_decode_task_row(row)])[0]
 
 
 @router.post("/{task_id}/pause")
