@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     agents_config: str = "./config/agents.yaml"
     fixtures_dir: str = "./fixtures"
     max_tool_rounds: int = 8  # specialist tool-calling loop limit
+    # Validate tool arguments against each tool's JSON schema before run
+    # (OpenAI FunctionTool / Anthropic tool_use style). On failure the tool
+    # does not execute; the specialist sees a structured observation.
+    # See docs/TOOLS.md.
+    tool_schema_strict: bool = True
+
 
     # Session / conversation compaction (stub). Summarize older turns; keep a
     # recent raw window. Default summarizer is extractive (no live LLM).

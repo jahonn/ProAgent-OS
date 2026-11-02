@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+from proagent_os.professional.tools.validation import validate_tool_call
+
 
 @dataclass
 class ToolContext:
@@ -55,8 +57,11 @@ class Tool(ABC):
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, strict_schema: bool = True) -> None:
         self._tools: Dict[str, Tool] = {}
+        # When True, invoke validates arguments against the tool's JSON schema
+        # before run (OpenAI FunctionTool / Anthropic tool_use style).
+        self.strict_schema = strict_schema
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -77,10 +82,36 @@ class ToolRegistry:
                 out.append(tool.openai_tool())
         return out
 
+    def validate(
+        self,
+        name: str,
+        arguments: Any,
+        *,
+        strict: Optional[bool] = None,
+    ) -> ToolResult:
+        """Validate without executing. Unknown tool → error (same as invoke)."""
+        tool = self.get(name)
+        if not tool:
+            return ToolResult(ok=False, output=None, error=f"Unknown tool: {name}")
+        use_strict = self.strict_schema if strict is None else strict
+        result, observation = validate_tool_call(
+            name,
+            arguments,
+            tool.parameters,
+            strict=use_strict,
+        )
+        if result.ok:
+            return ToolResult(ok=True, output={"valid": True}, error=None)
+        return ToolResult(ok=False, output=observation, error=result.error_message())
+
     async def invoke(self, name: str, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool = self.get(name)
         if not tool:
             return ToolResult(ok=False, output=None, error=f"Unknown tool: {name}")
+        check = self.validate(name, arguments if arguments is not None else {})
+        if not check.ok:
+            # Do not execute: no shell-out, no HTTP, no URL follow from bad args.
+            return check
         try:
             return await tool.run(arguments or {}, ctx)
         except Exception as exc:  # noqa: BLE001
