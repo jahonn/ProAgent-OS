@@ -16,6 +16,7 @@ def _decode_task_row(row: dict) -> dict:
     row["plan"] = loads(row.pop("plan_json", "[]"), [])
     row["trace"] = loads(row.pop("trace_json", "[]"), [])
     row["pending_action"] = loads(row.pop("pending_action_json", "{}"), {})
+    row["hitl_checkpoint"] = loads(row.pop("hitl_checkpoint_json", "{}"), {})
     return row
 
 
@@ -85,8 +86,14 @@ def pause_task(task_id: str, body: TaskPause, tenant: TenantDep) -> dict:
 
 
 @router.post("/{task_id}/resume")
-def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None = None) -> dict:
-    """Approve a paused run: awaiting_human → completed (stub; no mid-loop continue)."""
+async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None = None) -> dict:
+    """Approve a paused run.
+
+    Default (``PROAGENT_HITL_RESUME_CONTINUE=true``): when the orchestrator stored
+    a checkpoint, re-enter the specialist loop with the human decision injected,
+    then finish remaining plan steps (OpenAI / LangGraph shaped). Without a
+    checkpoint, or when the flag is false, marks ``completed`` (legacy stub).
+    """
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
     enforce(tenant, Permission.RECOMMENDATION_DECIDE)
@@ -95,16 +102,18 @@ def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None = Non
         raise HTTPException(404, "task not found")
     note = (body.note if body else "") or ""
     try:
-        return get_services().hitl.resume_task(
+        return await get_services().orchestrator.resume_after_hitl(
             tenant["id"], task_id, actor=tenant["id"], note=note
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
+    except KeyError:
+        raise HTTPException(404, "task not found") from None
 
 
 @router.post("/{task_id}/reject")
 def reject_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None = None) -> dict:
-    """Reject a paused run: awaiting_human → cancelled."""
+    """Reject a paused run: awaiting_human → cancelled. Never continues."""
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
     enforce(tenant, Permission.RECOMMENDATION_DECIDE)

@@ -65,28 +65,37 @@ Approvals are **product pauses**, not a new chat turn — the same distinction
 OpenAI documents for run interruptions. Executors never treat the action payload
 as a URL or shell command (`proagent_os/proactive/executors.py`).
 
-## Task-run HITL pause / resume (stub)
+## Task-run HITL pause / resume (mid-loop continue)
 
-Aligns with OpenAI Agents **run interruptions** and Anthropic computer-use
-**confirm consequential actions**, without replacing the recommendation inbox.
+Aligns with OpenAI Agents **run interruptions** + `RunState.approve` /
+`Runner.run(agent, state)`, Anthropic computer-use **confirm consequential
+actions**, and LangGraph **interrupt + `Command(resume=...)`** — without
+replacing the recommendation inbox.
 
 ```mermaid
 flowchart LR
   run[Task running] -->|request_run_approval or POST pause| pause[awaiting_human]
-  pause -->|POST resume| done[completed + hitl_decision=approved]
+  pause -->|POST resume + checkpoint| cont[running again: inject decision + finish plan]
+  cont --> done[completed + hitl_decision=approved]
+  pause -->|POST resume no checkpoint or flag off| stub[completed stub]
   pause -->|POST reject| cancel[cancelled + hitl_decision=rejected]
 ```
 
-| Piece | Behavior now (stub) | Planned |
+| Piece | Behavior now | Still planned |
 | --- | --- | --- |
-| Status | `running` → `awaiting_human` → `completed` \| `cancelled` | Resume continues the specialist mid-loop |
+| Status | `running` → `awaiting_human` → (approve) continue → `completed`, or reject → `cancelled` | Dedicated task audit table |
 | Trigger | Tool with `requires_human_approval` (builtin `request_run_approval`) or `POST /api/v1/tasks/{id}/pause` | Guardrail / policy interrupts mid-tool batch |
 | Payload | `pending_action_json` opaque JSON; never URL/shell | Typed action schemas + dry-run previews |
-| Decide API | `POST .../resume`, `POST .../reject` (RBAC reuses `recommendation.decide`) | Dedicated `task.decide` permission + audit table |
-| Orchestrator | Stops cleanly; resume marks completed with decision recorded | Re-enter tool loop after approve; skip or run gated tool |
+| Checkpoint | `hitl_checkpoint_json` (migration `0006`): plan, completed steps, pause locus | Full message-history / tool-call replay |
+| Decide API | `POST .../resume`, `POST .../reject` (RBAC reuses `recommendation.decide`) | Dedicated `task.decide` permission |
+| Orchestrator | On approve with checkpoint + `PROAGENT_HITL_RESUME_CONTINUE=true` (default): inject human decision into the paused specialist, run remaining plan steps, aggregate. Flag false or no checkpoint: legacy mark-completed stub. Reject never continues. | Execute gated side-effect tools after approve |
 
-Code: `proagent_os/harness/hitl.py`, hooks in `orchestrator.py`, migration `0005_task_hitl_pause`.
-Trace phase `hitl` (`LoopPhase.HITL`). Proactive `emit_recommendation` is unchanged.
+Toggle: `PROAGENT_HITL_RESUME_CONTINUE` (default `true`). Reject/cancel paths are
+unchanged either way.
+
+Code: `proagent_os/harness/hitl.py`, `Orchestrator.resume_after_hitl`, migrations
+`0005_task_hitl_pause` + `0006_hitl_checkpoint`. Trace phase `hitl`
+(`LoopPhase.HITL`). Proactive `emit_recommendation` is unchanged.
 
 ## Industry references (prefer official)
 
@@ -96,6 +105,8 @@ Trace phase `hitl` (`LoopPhase.HITL`). Proactive `emit_recommendation` is unchan
 | Agents SDK primitives + tracing | OpenAI Agents SDK | https://openai.github.io/openai-agents-python/ |
 | Client tool-use agentic loop | Anthropic — How tool use works | https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works |
 | Computer-use + human confirm for consequential actions | Anthropic — Computer use tool | https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool |
+| HITL interrupt / resume | OpenAI Agents — Human-in-the-loop | https://openai.github.io/openai-agents-python/human_in_the_loop/ |
+| Graph interrupt + resume value | LangGraph — Interrupts | https://docs.langchain.com/oss/python/langgraph/interrupts |
 | Plan-and-execute vs ReAct | LangChain blog — Plan-and-Execute Agents | https://www.langchain.com/blog/planning-agents |
 | Trajectory / tool-path evaluation | LangSmith — Evaluate a complex agent | https://docs.langchain.com/langsmith/evaluate-complex-agent |
 | Multi-agent runtime + eval criteria | Google ADK | https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/adk |
@@ -180,7 +191,7 @@ Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
 | `tool_trajectory` / `summarize_run` helpers | Exact-match / ADK numeric trajectory scores |
 | Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
 | Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
-| Task-run HITL pause/resume stub (`awaiting_human`) | Mid-run continue after approve; dedicated task audit |
+| Task-run HITL mid-loop resume (`awaiting_human` + checkpoint) | Full tool-call replay; dedicated task audit; gated tool execute |
 | Session / conversation compaction stub (`summary` + keep last N) | LLM summarizer, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
 | Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |
@@ -195,7 +206,7 @@ for fixture layout and matching rules.
 - `proagent_os/harness/loop.py` — phases and trajectory helpers
 - `proagent_os/eval/` — golden-task loader + trajectory compare stub
 - `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format + arg validation
-- `proagent_os/harness/hitl.py` — task-run pause / resume / reject stub
+- `proagent_os/harness/hitl.py` — task-run pause / resume (mid-loop continue) / reject
 - `proagent_os/harness/memory.py` / `compaction.py` — conversation store + session compaction stub
 - `proagent_os/proactive/` — monitors, recommendations, executors
 - `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/MEMORY.md`, `docs/TOOLS.md`, `docs/VERTICAL_SKILL.md`

@@ -174,12 +174,26 @@ def _migration_0005_task_hitl_pause(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_0006_hitl_checkpoint(conn: sqlite3.Connection) -> None:
+    """Durable HITL resume checkpoint (plan + completed steps + pause locus).
+
+    Opaque JSON for the orchestrator; never treated as URL/shell. Distinct from
+    ``pending_action_json`` (human-facing proposed action).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "hitl_checkpoint_json" not in cols:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN hitl_checkpoint_json TEXT NOT NULL DEFAULT '{}'"
+        )
+
+
 MIGRATIONS: List[Migration] = [
     Migration(1, "0001_baseline", _migration_0001_baseline),
     Migration(2, "0002_tenant_list_indexes", _migration_0002_tenant_list_indexes),
     Migration(3, "0003_usage_events", _migration_0003_usage_events),
     Migration(4, "0004_tenant_role_overrides", _migration_0004_tenant_role_overrides),
     Migration(5, "0005_task_hitl_pause", _migration_0005_task_hitl_pause),
+    Migration(6, "0006_hitl_checkpoint", _migration_0006_hitl_checkpoint),
 ]
 
 

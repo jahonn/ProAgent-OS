@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     # Production should leave this false and rely on heuristic triggers.
     replan_force: bool = False
 
+    # HITL mid-loop resume (OpenAI Agents interruption / LangGraph Command(resume)).
+    # Default true: POST .../resume after awaiting_human re-enters the specialist
+    # loop with the human decision injected when a checkpoint exists.
+    # Set false to restore the v0.1.x stub (approve → mark completed, no continue).
+    # Reject/cancel paths are unchanged either way. See docs/ARCHITECTURE.md.
+    hitl_resume_continue: bool = True
 
     # Session / conversation compaction (stub). Summarize older turns; keep a
     # recent raw window. Default summarizer is extractive (no live LLM).

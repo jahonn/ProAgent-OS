@@ -60,6 +60,7 @@ def _seed_running_task(tenant_id: str) -> str:
             "pending_action_json": "{}",
             "hitl_decision": "",
             "hitl_decided_at": "",
+            "hitl_checkpoint_json": "{}",
         },
     )
     return task_id
@@ -229,3 +230,219 @@ def test_api_pause_resume_reject_and_readonly_403():
     rejected = client.post(f"/api/v1/tasks/{task_id2}/reject", headers=headers)
     assert rejected.status_code == 200, rejected.text
     assert rejected.json()["status"] == STATUS_CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_resume_continues_specialist_loop(monkeypatch):
+    """Approve after request_run_approval re-enters specialist + finishes (mock)."""
+    tid = _tenant("pk_hitl_continue")
+    svc = get_services()
+
+    class ScriptedLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(
+            self,
+            messages: List[LLMMessage],
+            tools: Optional[List[Dict[str, Any]]] = None,
+            tool_choice: Any = None,
+        ) -> LLMResponse:
+            self.calls += 1
+            tool_names = []
+            if tools:
+                for t in tools:
+                    fn = t.get("function") if isinstance(t, dict) else None
+                    if isinstance(fn, dict) and fn.get("name"):
+                        tool_names.append(fn["name"])
+            # Planner (no tools)
+            if not tools:
+                # First plan call vs later aggregate: distinguish by content.
+                user = ""
+                for m in messages:
+                    if m.role == "user" and m.content:
+                        user = m.content
+                        break
+                if "Specialist results" in user:
+                    return LLMResponse(
+                        content="Final: email approved and drafted.",
+                        model="scripted",
+                    )
+                return LLMResponse(
+                    content='{"steps":[{"agent":"analyst","goal":"gate","tools":["request_run_approval"]}],"summary":"hitl"}',
+                    model="scripted",
+                )
+            # Specialist: first time request approval; after HITL resume seed, answer text.
+            joined = " ".join(
+                (m.content or "") for m in messages if isinstance(m.content, str)
+            )
+            if "A human approved the pending action" in joined:
+                return LLMResponse(
+                    content="Draft prepared after human approval.",
+                    model="scripted",
+                )
+            if "request_run_approval" in tool_names:
+                return LLMResponse(
+                    content=None,
+                    model="scripted",
+                    tool_calls=[
+                        ToolCall(
+                            id="tc_hitl_1",
+                            name="request_run_approval",
+                            arguments={
+                                "reason": "Confirm outbound email",
+                                "action": {"kind": "email", "to": "user@example.com"},
+                            },
+                            raw_arguments="",
+                        )
+                    ],
+                )
+            return LLMResponse(content="unexpected", model="scripted")
+
+    monkeypatch.setattr(svc.orchestrator, "llm", ScriptedLLM())
+    paused = await svc.orchestrator.run_task(tid, "Send a consequential email")
+    assert paused["status"] == STATUS_AWAITING_HUMAN
+    assert paused.get("hitl_checkpoint", {}).get("v") == 1
+
+    resumed = await svc.orchestrator.resume_after_hitl(
+        tid, paused["task_id"], actor="ops", note="ship it"
+    )
+    assert resumed["status"] == STATUS_COMPLETED
+    assert resumed.get("hitl") == "continued"
+    assert resumed.get("hitl_decision") == "approved"
+    assert "approved" in (resumed.get("result") or "").lower() or "Draft" in (
+        resumed.get("result") or ""
+    )
+    row = get_db().fetchone(
+        "SELECT status, hitl_decision, hitl_checkpoint_json FROM tasks WHERE id=?",
+        (paused["task_id"],),
+    )
+    assert row["status"] == STATUS_COMPLETED
+    assert row["hitl_decision"] == "approved"
+    assert row["hitl_checkpoint_json"] in ("{}", "")
+
+
+@pytest.mark.asyncio
+async def test_resume_continue_flag_off_marks_completed_without_reloop(monkeypatch):
+    """PROAGENT_HITL_RESUME_CONTINUE=false restores legacy stub approve."""
+    from proagent_os.config import get_settings
+    from proagent_os.services import reset_services
+
+    monkeypatch.setenv("PROAGENT_HITL_RESUME_CONTINUE", "false")
+    get_settings.cache_clear()
+    reset_services()
+
+    tid = _tenant("pk_hitl_stub")
+    svc = get_services()
+
+    class ScriptedLLM:
+        async def chat(
+            self,
+            messages: List[LLMMessage],
+            tools: Optional[List[Dict[str, Any]]] = None,
+            tool_choice: Any = None,
+        ) -> LLMResponse:
+            tool_names = []
+            if tools:
+                for t in tools:
+                    fn = t.get("function") if isinstance(t, dict) else None
+                    if isinstance(fn, dict) and fn.get("name"):
+                        tool_names.append(fn["name"])
+            if not tools:
+                return LLMResponse(
+                    content='{"steps":[{"agent":"analyst","goal":"gate","tools":["request_run_approval"]}],"summary":"hitl"}',
+                    model="scripted",
+                )
+            if "request_run_approval" in tool_names:
+                return LLMResponse(
+                    content=None,
+                    model="scripted",
+                    tool_calls=[
+                        ToolCall(
+                            id="tc_hitl_2",
+                            name="request_run_approval",
+                            arguments={"reason": "Confirm", "action": {"kind": "x"}},
+                            raw_arguments="",
+                        )
+                    ],
+                )
+            return LLMResponse(content="should not continue", model="scripted")
+
+    monkeypatch.setattr(svc.orchestrator, "llm", ScriptedLLM())
+    paused = await svc.orchestrator.run_task(tid, "Need confirm")
+    assert paused["status"] == STATUS_AWAITING_HUMAN
+    resumed = await svc.orchestrator.resume_after_hitl(
+        tid, paused["task_id"], actor="ops", note="legacy"
+    )
+    assert resumed["status"] == STATUS_COMPLETED
+    assert resumed.get("hitl") != "continued"
+    assert "legacy" in (resumed.get("result") or "")
+
+
+@pytest.mark.asyncio
+async def test_api_resume_continues_when_checkpoint_present(monkeypatch):
+    """HTTP resume path uses orchestrator continue (async)."""
+    tid = _tenant("pk_hitl_api_cont")
+    svc = get_services()
+
+    class ScriptedLLM:
+        async def chat(
+            self,
+            messages: List[LLMMessage],
+            tools: Optional[List[Dict[str, Any]]] = None,
+            tool_choice: Any = None,
+        ) -> LLMResponse:
+            tool_names = []
+            if tools:
+                for t in tools:
+                    fn = t.get("function") if isinstance(t, dict) else None
+                    if isinstance(fn, dict) and fn.get("name"):
+                        tool_names.append(fn["name"])
+            if not tools:
+                user = ""
+                for m in messages:
+                    if m.role == "user" and m.content:
+                        user = m.content
+                        break
+                if "Specialist results" in user:
+                    return LLMResponse(content="Aggregated after HITL.", model="scripted")
+                return LLMResponse(
+                    content='{"steps":[{"agent":"analyst","goal":"gate","tools":["request_run_approval"]}],"summary":"hitl"}',
+                    model="scripted",
+                )
+            joined = " ".join(
+                (m.content or "") for m in messages if isinstance(m.content, str)
+            )
+            if "A human approved the pending action" in joined:
+                return LLMResponse(content="Continued after approve.", model="scripted")
+            if "request_run_approval" in tool_names:
+                return LLMResponse(
+                    content=None,
+                    model="scripted",
+                    tool_calls=[
+                        ToolCall(
+                            id="tc_api",
+                            name="request_run_approval",
+                            arguments={"reason": "Confirm publish", "action": {"kind": "publish"}},
+                            raw_arguments="",
+                        )
+                    ],
+                )
+            return LLMResponse(content="?", model="scripted")
+
+    monkeypatch.setattr(svc.orchestrator, "llm", ScriptedLLM())
+    paused = await svc.orchestrator.run_task(tid, "Publish")
+    assert paused["status"] == STATUS_AWAITING_HUMAN
+    app = create_app()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer pk_hitl_api_cont"}
+    set_tenant_role(tid, Role.TENANT_OPERATOR.value)
+    resumed = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/resume",
+        headers=headers,
+        json={"note": "ok"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    body = resumed.json()
+    assert body["status"] == STATUS_COMPLETED
+    assert body.get("hitl") == "continued"
