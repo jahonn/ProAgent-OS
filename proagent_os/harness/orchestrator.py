@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from proagent_os.config import get_settings
 from proagent_os.db import dumps, get_db, new_id, utcnow
+from proagent_os.harness.loop import LoopPhase, event
 from proagent_os.harness.memory import ConversationMemory
 from proagent_os.harness.registry import AgentRegistry
 from proagent_os.llm.base import LLMMessage, LLMProvider, LLMResponse, ToolCall
@@ -69,7 +70,12 @@ def _legacy_tool_calls_from_content(content: Optional[str]) -> Tuple[List[ToolCa
 
 
 class Orchestrator:
-    """Planner → Specialist agents → Aggregator run loop."""
+    """Planner → Specialist agents → Aggregator run loop.
+
+    Trace phases use :class:`~proagent_os.harness.loop.LoopPhase` (see
+    ``docs/ARCHITECTURE.md``). Specialist steps still run an inner
+    model→tool→observe loop up to ``max_tool_rounds``.
+    """
 
     def __init__(
         self,
@@ -199,7 +205,7 @@ class Orchestrator:
             ],
             "summary": "Default two-step plan",
         }
-        trace.append({"phase": "plan", "model": resp.model, "raw": (resp.content or "")[:2000], "parsed": parsed})
+        trace.append(event(LoopPhase.PLAN, model=resp.model, raw=(resp.content or "")[:2000], parsed=parsed))
         return parsed
 
     async def _run_specialist(
@@ -240,15 +246,15 @@ class Orchestrator:
                     tool_calls = legacy_calls
 
             trace.append(
-                {
-                    "phase": "specialist",
-                    "agent": agent_id,
-                    "round": round_i,
-                    "model": resp.model,
-                    "content_preview": (resp.content or "")[:500],
-                    "tool_call_count": len(tool_calls),
-                    "tool_call_names": [tc.name for tc in tool_calls],
-                }
+                event(
+                    LoopPhase.SPECIALIST,
+                    agent=agent_id,
+                    round=round_i,
+                    model=resp.model,
+                    content_preview=(resp.content or "")[:500],
+                    tool_call_count=len(tool_calls),
+                    tool_call_names=[tc.name for tc in tool_calls],
+                )
             )
 
             if not tool_calls:
@@ -294,18 +300,18 @@ class Orchestrator:
                     )
                 )
                 trace.append(
-                    {
-                        "phase": "tool",
-                        "agent": agent_id,
-                        "round": round_i,
-                        "id": tc.id,
-                        "name": tc.name,
-                        "args_summary": _args_summary(tc.arguments or {}),
-                        "ok": ok,
-                        "error": error,
-                        "latency_ms": latency_ms,
-                        "output_preview": _args_summary({"output": output}, limit=400) if ok else None,
-                    }
+                    event(
+                        LoopPhase.TOOL,
+                        agent=agent_id,
+                        round=round_i,
+                        id=tc.id,
+                        name=tc.name,
+                        args_summary=_args_summary(tc.arguments or {}),
+                        ok=ok,
+                        error=error,
+                        latency_ms=latency_ms,
+                        output_preview=_args_summary({"output": output}, limit=400) if ok else None,
+                    )
                 )
         else:
             # Max rounds exhausted — ask once more without tools for a final answer
@@ -317,18 +323,26 @@ class Orchestrator:
             )
             answer = (resp.content or "").strip()
             trace.append(
-                {
-                    "phase": "specialist",
-                    "agent": agent_id,
-                    "round": self.max_tool_rounds,
-                    "model": resp.model,
-                    "note": "max_tool_rounds_forced_final",
-                    "content_preview": answer[:500],
-                }
+                event(
+                    LoopPhase.SPECIALIST,
+                    agent=agent_id,
+                    round=self.max_tool_rounds,
+                    model=resp.model,
+                    note="max_tool_rounds_forced_final",
+                    content_preview=answer[:500],
+                )
             )
 
         if not answer:
-            answer = f"[{agent_id}] completed {sum(1 for t in trace if t.get('phase')=='tool' and t.get('agent')==agent_id)} tool call(s); no textual final answer."
+            tool_count = sum(
+                1
+                for t in trace
+                if t.get("phase") == LoopPhase.TOOL.value and t.get("agent") == agent_id
+            )
+            answer = (
+                f"[{agent_id}] completed {tool_count} tool call(s); "
+                "no textual final answer."
+            )
         return answer
 
     async def _aggregate(
@@ -351,5 +365,5 @@ class Orchestrator:
         ]
         resp = await self.llm.chat(messages)
         raw = resp.content or ""
-        trace.append({"phase": "aggregate", "model": resp.model, "raw": raw[:2000]})
+        trace.append(event(LoopPhase.AGGREGATE, model=resp.model, raw=raw[:2000]))
         return raw
