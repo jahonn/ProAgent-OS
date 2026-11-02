@@ -69,6 +69,7 @@ def _isolate_db(tmp_path, monkeypatch):
                 str(Path("skills").resolve()),
                 str(Path("verticals/example/skills").resolve()),
                 str(Path("verticals/support_desk/skills").resolve()),
+                str(Path("verticals/ops_incident/skills").resolve()),
             ]
         ),
     )

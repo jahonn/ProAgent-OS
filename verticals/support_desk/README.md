@@ -17,7 +17,7 @@ Start commands from the repository root, same as `verticals/example`.
 
 Agents: `verticals/support_desk/agents/agents.yaml` is merged at startup with every other `verticals/*/agents/agents.yaml`. Core agents still come from `PROAGENT_AGENTS_CONFIG` (default `./config/agents.yaml`). There is no second agents env var.
 
-Skills: `./verticals/support_desk/skills` is already on the default `PROAGENT_SKILLS_DIRS`, next to `./skills` and `./verticals/example/skills`. Set the variable when you want this pack without editing the default:
+Skills: `./verticals/support_desk/skills` is already on the default `PROAGENT_SKILLS_DIRS`, next to `./skills`, `./verticals/example/skills`, and `./verticals/ops_incident/skills`. Set the variable when you want this pack without editing the default:
 
 ```bash
 export PROAGENT_SKILLS_DIRS=./skills,./verticals/support_desk/skills

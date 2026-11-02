@@ -26,7 +26,7 @@ services:
       PROAGENT_OTEL_EXPORTER: ${PROAGENT_OTEL_EXPORTER:-console}
       PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT: ${PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT:-}
       PROAGENT_OTEL_SERVICE_NAME: ${PROAGENT_OTEL_SERVICE_NAME:-proagent-os}
-      PROAGENT_SKILLS_DIRS: /app/skills,/app/verticals/example/skills,/app/verticals/support_desk/skills
+      PROAGENT_SKILLS_DIRS: /app/skills,/app/verticals/example/skills,/app/verticals/support_desk/skills,/app/verticals/ops_incident/skills
       PROAGENT_AGENTS_CONFIG: /app/config/agents.yaml
     volumes:
       - proagent-data:/app/data
@@ -59,7 +59,7 @@ services:
       PROAGENT_OTEL_EXPORTER: ${PROAGENT_OTEL_EXPORTER:-console}
       PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT: ${PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT:-}
       PROAGENT_OTEL_SERVICE_NAME: ${PROAGENT_OTEL_SERVICE_NAME:-proagent-os}
-      PROAGENT_SKILLS_DIRS: /app/skills,/app/verticals/example/skills,/app/verticals/support_desk/skills
+      PROAGENT_SKILLS_DIRS: /app/skills,/app/verticals/example/skills,/app/verticals/support_desk/skills,/app/verticals/ops_incident/skills
       PROAGENT_AGENTS_CONFIG: /app/config/agents.yaml
     volumes:
       - proagent-data:/app/data

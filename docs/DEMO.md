@@ -28,6 +28,14 @@ python scripts/demo_support_desk.py
 
 Lines longer than 100 columns are wrapped on spaces so the frame stays readable. The words are the scripts' stdout. Identifiers change when the recording is regenerated.
 
+The on-call pack is a third offline script. It is not in `docs/demo.cast`.
+
+```bash
+python scripts/demo_ops_incident.py
+```
+
+That run ingests the Harborline runbooks, cites **API 5xx Runbook** from `incident_triage`, completes a mock task (`researcher` then `analyst`), and approves **Page on-call: API 5xx runbook matches** through the noop executor. Nobody is paged. Details are in `verticals/ops_incident/README.md`.
+
 Re-record from the repo root after the install in [Setup](#setup):
 
 ```bash
@@ -67,7 +75,7 @@ What the script sets for you (only if the variable is unset):
 | `PROAGENT_ADMIN_KEY` | `dev-admin-key` |
 | `PROAGENT_LLM_PROVIDER` | `mock` |
 | `PROAGENT_AGENTS_CONFIG` | `./config/agents.yaml` |
-| `PROAGENT_SKILLS_DIRS` | `./skills`, `./verticals/example/skills`, and `./verticals/support_desk/skills` |
+| `PROAGENT_SKILLS_DIRS` | `./skills`, `./verticals/example/skills`, `./verticals/support_desk/skills`, and `./verticals/ops_incident/skills` |
 
 If `PROAGENT_DB_PATH` is already exported, the script uses that file and deletes it first. Leave it unset to keep the demo database separate from `./data/proagent.db`.
 
@@ -88,8 +96,8 @@ Dashboard shape (counts, not ids):
 - `acceptance.counts`: `executed` `1` and `pending` `1`
 - `acceptance.acceptance_rate`: `1.0`, `decided`: `1`
 - `outcomes.by_metric`: `conversion_lift_pp`, `n` `1`, `avg_value` `0.4`
-- `skills`: `analyst`, `research`, `market_scan`, `policy_lookup`, `ticket_triage`
-- `agents`: `planner`, `researcher`, `analyst`, `aggregator`, `market_scout`, `support_triage`
+- `skills`: `analyst`, `research`, `market_scan`, `policy_lookup`, `ticket_triage`, `incident_triage`, `runbook_lookup`
+- `agents`: `planner`, `researcher`, `analyst`, `aggregator`, `market_scout`, `incident_commander`, `support_triage`
 
 The pending recommendation is expected. During the task the analyst calls `emit_recommendation`, which stays `pending`. The acceptance rate ignores pending items and only counts decided ones, so the executed monitor recommendation reports `1.0`.
 

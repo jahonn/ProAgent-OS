@@ -26,6 +26,7 @@ os.environ.setdefault(
             str(ROOT / "skills"),
             str(ROOT / "verticals" / "example" / "skills"),
             str(ROOT / "verticals" / "support_desk" / "skills"),
+            str(ROOT / "verticals" / "ops_incident" / "skills"),
         ]
     ),
 )

@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     host: str = "0.0.0.0"
     port: int = 8080
-    skills_dirs: str = "./skills,./verticals/example/skills,./verticals/support_desk/skills"
+    skills_dirs: str = "./skills,./verticals/example/skills,./verticals/support_desk/skills,./verticals/ops_incident/skills"
     agents_config: str = "./config/agents.yaml"
     fixtures_dir: str = "./fixtures"
     max_tool_rounds: int = 8  # specialist tool-calling loop limit
