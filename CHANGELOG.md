@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+_Nothing yet._
+
+## [0.1.1] - 2026-11-02
+
+First public GitHub Release. `pyproject.toml` and `proagent_os.__version__` are `0.1.1`.
+
 ### Docs
 
-- Draft proposed v0.1.1 human release notes: [docs/RELEASE_NOTES_v0.1.1.md](docs/RELEASE_NOTES_v0.1.1.md) (not tagged yet).
+- Human release notes for this release: [docs/RELEASE_NOTES_v0.1.1.md](docs/RELEASE_NOTES_v0.1.1.md).
 
 ### Added
 
@@ -32,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support desk vertical (`verticals/support_desk/`): sample policies, `support_triage`, `ticket_triage` and `policy_lookup` skills, and `scripts/demo_support_desk.py`. Startup merges every `verticals/*/agents/agents.yaml`. The support demo approves through the default noop executor.
 - README scan path for first-time visitors: one-line product description, who it is for, a positioning table, and a harness architecture diagram.
 - Scripted mock-demo notes in `docs/DEMO.md` (commands and the output to expect). No API key required.
-- This changelog. The `v0.1.0` GitHub Release tag is not published yet; cutting it is tracked in [issue #2](https://github.com/jahonn/ProAgent-OS/issues/2).
 
 ## [0.1.0] - 2026-10-29
 
@@ -49,5 +56,6 @@ First public MVP. `pyproject.toml` and `proagent_os.__version__` are `0.1.0`. Ea
 - GitHub Actions CI: `pytest` on Python 3.11 and 3.12 with the mock LLM, and a pull request template.
 - Optional `hybrid` and `vector` retrieval using an offline hash-bag stub embedder (`PROAGENT_KB_EMBED_BACKEND=stub`). Default search remains BM25, which is what CI runs. sqlite-vec, pgvector, and remote embedding providers are not wired; the `vec` extra is a placeholder.
 
-[Unreleased]: https://github.com/jahonn/ProAgent-OS/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jahonn/ProAgent-OS/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/jahonn/ProAgent-OS/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jahonn/ProAgent-OS/releases/tag/v0.1.0
