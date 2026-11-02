@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from proagent_os.db import dumps, get_db, loads, new_id, utcnow
 from proagent_os.harness.hitl import (
+    FINGERPRINT_PREFIX_LEN,
     STATUS_AWAITING_HUMAN,
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -19,6 +20,7 @@ from proagent_os.harness.hitl import (
     execute_fingerprint,
     observation_snippet,
     parse_gated_tool_call,
+    public_execute_receipt,
     sanitize_pending_action,
 )
 from proagent_os.harness.loop import LoopPhase
@@ -1317,3 +1319,244 @@ async def test_stuck_running_started_receipt_fail_closed_and_reject(monkeypatch)
     assert rejected.json()["status"] == STATUS_CANCELLED
     assert ledger.runs == [{"entry": "deposit", "amount": 5}]
     assert TaskHitlService().list_execute_receipts(tid, paused["task_id"])[0]["status"] == "started"
+
+
+def test_public_execute_receipt_redacts_secrets_and_caps_observation():
+    """The summary keeps status and a hash, and drops secrets and raw args."""
+    summary = public_execute_receipt(
+        {
+            "id": "rx_public",
+            "tool_name": "gated_ledger",
+            "tool_call_id": "tc_public",
+            "fingerprint": "a" * 64,
+            "args_hash": "b" * 64,
+            "status": "failed",
+            "created_at": "2026-11-02T00:00:00+00:00",
+            "updated_at": "2026-11-02T00:00:01+00:00",
+            "error": "boom pk_supersecretvalue",
+            "observation_json": dumps(
+                {
+                    "ok": False,
+                    "error": "Bearer sk-supersecrettoken",
+                    "output": {
+                        "api_key": "pk_supersecretvalue",
+                        "arguments": {"entry": "deposit", "amount": 5},
+                        "entry": "deposit",
+                    },
+                }
+            ),
+        }
+    )
+    encoded = dumps(summary)
+    assert summary["fingerprint_prefix"] == "a" * FINGERPRINT_PREFIX_LEN
+    assert len(summary["fingerprint_prefix"]) == FINGERPRINT_PREFIX_LEN
+    assert "a" * 64 not in encoded
+    assert summary["args_hash"] == "b" * 64
+    assert summary["status"] == "failed"
+    assert summary["tool_name"] == "gated_ledger"
+    assert summary["created_at"].startswith("2026-11-02")
+    assert summary["updated_at"].startswith("2026-11-02")
+    assert "pk_supersecretvalue" not in encoded
+    assert "sk-supersecrettoken" not in encoded
+    assert summary["error"] == "boom [redacted]"
+    assert summary["observation"]["output"]["api_key"] == "[redacted]"
+    assert summary["observation"]["output"]["arguments"] == "[redacted]"
+    assert summary["observation"]["output"]["entry"] == "deposit"
+    assert "arguments" not in summary
+    assert "fingerprint" not in summary
+    assert summary["observation_truncated"] is False
+
+    huge = public_execute_receipt(
+        {
+            "id": "rx_huge",
+            "tool_name": "gated_ledger",
+            "tool_call_id": "tc_huge",
+            "fingerprint": "c" * 64,
+            "args_hash": "d" * 64,
+            "status": "succeeded",
+            "created_at": "t1",
+            "updated_at": "t2",
+            "error": "",
+            "observation_json": dumps(
+                {"ok": True, "output": {f"field_{i}": "x" * 200 for i in range(20)}, "error": None}
+            ),
+        }
+    )
+    assert huge["observation_truncated"] is True
+    assert "x" * 500 not in dumps(huge["observation"])
+    assert huge["observation"]["output"]["_truncated"] is True
+
+
+class _SecretLedger(GatedLedgerTool):
+    """Echoes a secret in the tool output so the GET summary must redact it."""
+
+    async def run(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.runs.append(dict(arguments))
+        return ToolResult(
+            ok=True,
+            output={
+                "recorded": True,
+                "entry": arguments.get("entry"),
+                "amount": arguments.get("amount"),
+                "api_key": "pk_supersecretvalue",
+                "note": "Bearer sk-supersecrettoken",
+            },
+        )
+
+
+def _install_secret_ledger(svc) -> _SecretLedger:
+    tool = _SecretLedger()
+    svc.tools.register(tool)
+    analyst = svc.agents.get("analyst")
+    assert analyst is not None
+    if "gated_ledger" not in analyst.tools:
+        analyst.tools = list(analyst.tools) + ["gated_ledger"]
+    return tool
+
+
+@pytest.mark.asyncio
+async def test_get_task_includes_execute_receipt_after_pause_approve(monkeypatch):
+    """Pause then approve, then GET shows the receipt summary under the same read scope."""
+    tid = _tenant("pk_hitl_receipt_get")
+    other = _tenant("pk_hitl_receipt_other")
+    svc = get_services()
+    ledger = _install_secret_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+    assert paused["status"] == STATUS_AWAITING_HUMAN
+    assert ledger.runs == []
+    args_hash, fingerprint = execute_fingerprint(
+        paused["task_id"], "gated_ledger", {"entry": "deposit", "amount": 5}
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer pk_hitl_receipt_get"}
+    set_tenant_role(tid, Role.TENANT_OPERATOR.value)
+    before = client.get(f"/api/v1/tasks/{paused['task_id']}", headers=headers)
+    assert before.status_code == 200, before.text
+    assert before.json()["hitl_execute_receipts"] == []
+    assert before.json()["pending_action"]["arguments"] == {"entry": "deposit", "amount": 5}
+
+    resumed = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/resume",
+        headers=headers,
+        json={"note": "post it"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == STATUS_COMPLETED
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+
+    # A receipt owned by another tenant must not appear on this task.
+    get_db().insert(
+        "hitl_execute_receipts",
+        {
+            "id": "rx_rogue",
+            "tenant_id": other,
+            "task_id": paused["task_id"],
+            "tool_call_id": "tc_rogue",
+            "tool_name": "other_tool",
+            "args_hash": "c" * 64,
+            "fingerprint": "d" * 64,
+            "status": "succeeded",
+            "observation_json": dumps({"ok": True, "output": {"api_key": "pk_roguesecretvalue"}}),
+            "error": "pk_roguesecretvalue",
+            "created_at": utcnow(),
+            "updated_at": utcnow(),
+        },
+    )
+
+    detail = client.get(f"/api/v1/tasks/{paused['task_id']}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["status"] == STATUS_COMPLETED
+    assert body["pending_action"]["tool"] == "gated_ledger"
+    receipts = body["hitl_execute_receipts"]
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    encoded = dumps(receipt)
+    assert receipt["tool_name"] == "gated_ledger"
+    assert receipt["tool_call_id"] == "tc_ledger"
+    assert receipt["status"] == "succeeded"
+    assert receipt["fingerprint_prefix"] == fingerprint[:FINGERPRINT_PREFIX_LEN]
+    assert fingerprint not in encoded
+    assert receipt["args_hash"] == args_hash
+    assert receipt["created_at"]
+    assert receipt["updated_at"]
+    assert receipt["error"] == ""
+    assert receipt["observation_truncated"] is False
+    assert receipt["observation"]["ok"] is True
+    assert receipt["observation"]["output"]["recorded"] is True
+    assert receipt["observation"]["output"]["entry"] == "deposit"
+    assert receipt["observation"]["output"]["api_key"] == "[redacted]"
+    assert "pk_supersecretvalue" not in encoded
+    assert "sk-supersecrettoken" not in encoded
+    assert "pk_roguesecretvalue" not in encoded
+    assert "arguments" not in receipt
+    assert "fingerprint" not in receipt
+    assert receipt["id"] != "rx_rogue"
+
+    set_tenant_role(tid, Role.TENANT_READONLY.value)
+    readonly = client.get(f"/api/v1/tasks/{paused['task_id']}", headers=headers)
+    assert readonly.status_code == 200
+    assert readonly.json()["hitl_execute_receipts"][0]["status"] == "succeeded"
+    assert readonly.json()["hitl_execute_receipts"][0]["args_hash"] == args_hash
+
+    listed = client.get("/api/v1/tasks", headers=headers)
+    assert listed.status_code == 200
+    items = [item for item in listed.json() if item["id"] == paused["task_id"]]
+    assert len(items) == 1
+    assert items[0]["hitl_execute_receipts"][0]["tool_name"] == "gated_ledger"
+    assert items[0]["hitl_execute_receipts"][0]["fingerprint_prefix"] == fingerprint[:FINGERPRINT_PREFIX_LEN]
+    assert items[0]["hitl_execute_receipts"][0]["status"] == "succeeded"
+    assert "pk_supersecretvalue" not in dumps(items[0]["hitl_execute_receipts"])
+
+    stranger = {"Authorization": "Bearer pk_hitl_receipt_other"}
+    missing = client.get(f"/api/v1/tasks/{paused['task_id']}", headers=stranger)
+    assert missing.status_code == 404
+    stranger_list = client.get("/api/v1/tasks", headers=stranger)
+    assert stranger_list.status_code == 200
+    assert all(item["id"] != paused["task_id"] for item in stranger_list.json())
+
+    admin = {"Authorization": "Bearer test-admin-key"}
+    as_admin = client.get(f"/api/v1/tasks/{paused['task_id']}", headers=admin)
+    assert as_admin.status_code == 200
+    assert as_admin.json()["hitl_execute_receipts"][0]["id"] == receipt["id"]
+    admin_list = client.get("/api/v1/tasks", headers=admin)
+    admin_items = [item for item in admin_list.json() if item["id"] == paused["task_id"]]
+    assert len(admin_items) == 1
+    assert admin_items[0]["hitl_execute_receipts"][0]["status"] == "succeeded"
+
+
+def test_openapi_task_schema_includes_execute_receipt_summary():
+    client = TestClient(create_app())
+    spec = client.get("/openapi.json")
+    assert spec.status_code == 200
+    document = spec.json()
+    schemas = document["components"]["schemas"]
+    props = schemas["HitlExecuteReceiptSummary"]["properties"]
+    for key in (
+        "tool_name",
+        "fingerprint_prefix",
+        "args_hash",
+        "status",
+        "created_at",
+        "updated_at",
+        "error",
+        "observation",
+        "observation_truncated",
+    ):
+        assert key in props
+    assert "arguments" not in props
+    assert "fingerprint" not in props
+    assert "hitl_execute_receipts" in schemas["TaskRead"]["properties"]
+    assert "hitl_execute_receipts" in schemas["TaskListItem"]["properties"]
+    detail_ref = document["paths"]["/api/v1/tasks/{task_id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    assert detail_ref.endswith("/TaskRead")
+    list_schema = document["paths"]["/api/v1/tasks"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert list_schema["items"]["$ref"].endswith("/TaskListItem")

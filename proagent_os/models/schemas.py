@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TenantCreate(BaseModel):
@@ -119,4 +119,72 @@ class TaskHitlNote(BaseModel):
 
     note: str = ""
     reexecute: bool = False
+
+
+class HitlExecuteReceiptSummary(BaseModel):
+    """Safe operator view of one HITL execute receipt.
+
+    The argument object is not a field. ``args_hash`` is the SHA-256 of those
+    arguments. ``fingerprint_prefix`` is the first 12 hex characters only.
+    Observation and error are capped. Secret-like keys and token-shaped
+    values are ``[redacted]``.
+    """
+
+    id: str
+    tool_name: str
+    tool_call_id: str = ""
+    fingerprint_prefix: str = Field(
+        description="First 12 hex characters of the execute fingerprint. The full fingerprint is omitted."
+    )
+    args_hash: str = Field(description="SHA-256 of the canonical tool arguments. The arguments themselves are omitted.")
+    status: Literal["started", "succeeded", "failed"]
+    created_at: str
+    updated_at: str
+    error: str = ""
+    observation: Any = None
+    observation_truncated: bool = False
+
+
+class TaskListItem(BaseModel):
+    """One row from ``GET /api/v1/tasks``.
+
+    ``hitl_execute_receipts`` is the same safe summary as the task detail.
+    """
+
+    id: str
+    tenant_id: str
+    status: str
+    input: str = ""
+    pause_reason: str = ""
+    hitl_decision: str = ""
+    created_at: str
+    updated_at: str
+    hitl_execute_receipts: List[HitlExecuteReceiptSummary] = Field(default_factory=list)
+
+
+class TaskRead(BaseModel):
+    """``GET /api/v1/tasks/{id}``.
+
+    Existing task fields stay. ``hitl_execute_receipts`` is added beside them.
+    Extra columns on the task row are kept.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    tenant_id: str
+    conversation_id: Optional[str] = None
+    status: str
+    input: str = ""
+    result: str = ""
+    plan: Any = Field(default_factory=list)
+    trace: Any = Field(default_factory=list)
+    pending_action: Any = Field(default_factory=dict)
+    hitl_checkpoint: Any = Field(default_factory=dict)
+    pause_reason: str = ""
+    hitl_decision: str = ""
+    hitl_decided_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    hitl_execute_receipts: List[HitlExecuteReceiptSummary] = Field(default_factory=list)
 
