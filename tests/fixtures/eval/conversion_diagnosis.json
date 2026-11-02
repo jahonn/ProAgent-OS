@@ -1,0 +1,13 @@
+{
+  "id": "conversion_diagnosis",
+  "description": "Mock planner→researcher→analyst path for the stock conversion question.",
+  "task": "Why is conversion low and what should we do?",
+  "match": "ordered_subset",
+  "expected_tools": ["kb_search", "clock", "emit_recommendation"],
+  "seed_kb": [
+    {
+      "title": "Product",
+      "text": "Acme conversion rate is below target at 1.8 percent. Activation is the lever."
+    }
+  ]
+}

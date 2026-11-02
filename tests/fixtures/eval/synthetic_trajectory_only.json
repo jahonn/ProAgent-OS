@@ -1,0 +1,8 @@
+{
+  "id": "synthetic_trajectory_only",
+  "description": "Fixture used by unit tests for matcher only; not run through Orchestrator in CI parametrize exclude if needed.",
+  "task": "__synthetic_only__",
+  "match": "ordered_subset",
+  "expected_tools": ["kb_search", "clock"],
+  "seed_kb": []
+}

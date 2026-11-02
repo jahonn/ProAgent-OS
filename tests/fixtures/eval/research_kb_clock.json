@@ -1,0 +1,13 @@
+{
+  "id": "research_kb_clock",
+  "description": "Ordered-subset check: researcher must use kb_search then clock; extra tools OK.",
+  "task": "Why is conversion low and what should we do?",
+  "match": "ordered_subset",
+  "expected_tools": ["kb_search", "clock"],
+  "seed_kb": [
+    {
+      "title": "Product",
+      "text": "Acme conversion rate is below target at 1.8 percent. Activation is the lever."
+    }
+  ]
+}

@@ -82,7 +82,7 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 
 ## Architecture
 
-Harness loop phases, industry mapping, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` in `proagent_os/harness/loop.py`).
+Harness loop phases, industry mapping, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` in `proagent_os/harness/loop.py`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md) (`proagent_os/eval/`).
 
 Planner and aggregator stay text-only. Specialists call tools natively, for up to `PROAGENT_MAX_TOOL_ROUNDS` rounds (JSON-in-content is still accepted).
 
