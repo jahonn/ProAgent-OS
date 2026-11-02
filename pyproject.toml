@@ -2,9 +2,26 @@
 name = "proagent-os"
 version = "0.1.1"
 description = "Commercial-ready vertical-agnostic Pro-Agent framework"
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
-license = { text = "MIT" }
+# SPDX expression (PEP 639). PyPI records this as License-Expression: MIT.
+# Do not also set "License :: OSI Approved :: MIT License": setuptools>=77
+# raises InvalidConfigError when that classifier sits next to license = "MIT".
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "ProAgent OS Contributors" }]
+keywords = ["agents", "fastapi", "llm", "rag", "hitl"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
@@ -19,6 +36,12 @@ dependencies = [
   "beautifulsoup4>=4.12.3",
   "lxml>=5.3.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jahonn/ProAgent-OS"
+Repository = "https://github.com/jahonn/ProAgent-OS"
+Issues = "https://github.com/jahonn/ProAgent-OS/issues"
+Changelog = "https://github.com/jahonn/ProAgent-OS/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
@@ -44,8 +67,16 @@ markers = [
 ]
 
 [build-system]
-requires = ["setuptools>=68"]
+# setuptools>=77 understands license = "MIT" (PEP 639). Isolated builds
+# (pip, python -m build) install this themselves. Runtime Python is unchanged.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["proagent_os*"]
+
+[tool.setuptools.package-data]
+proagent_os = ["web/static/*", "web/templates/*"]
