@@ -1,7 +1,7 @@
-"""Golden-task / tool-trajectory evaluation stub.
+"""Golden-task evaluation.
 
-Compares ``tool_trajectory(trace)`` to fixture expectations. No LLM judge.
-See ``docs/EVAL.md``.
+Default score is ordered-subset trajectory matching. ``PROAGENT_EVAL_JUDGE=llm``
+adds an optional chat judge after that check. See ``docs/EVAL.md``.
 """
 
 from proagent_os.eval.golden import (
@@ -11,10 +11,13 @@ from proagent_os.eval.golden import (
     load_golden_tasks,
     run_golden_task,
 )
+from proagent_os.eval.judge import JudgeVerdict, LlmJudge
 
 __all__ = [
     "EvalResult",
     "GoldenTask",
+    "JudgeVerdict",
+    "LlmJudge",
     "compare_trajectory",
     "load_golden_tasks",
     "run_golden_task",

@@ -1,12 +1,17 @@
 """Load golden fixtures and compare tool trajectories.
 
-Matching mode for this stub is **ordered_subset**: every name in
-``expected_tools`` must appear in ``actual`` in the same order, with extra
-tools allowed between and around them. Exact equality is not required.
+The trajectory matcher is **ordered_subset**: every name in ``expected_tools``
+must appear in ``actual`` in the same order, with extra tools allowed between
+and around them. Exact equality is not required.
 
-This mirrors the commercial intent of LangSmith complex-agent trajectory
-checks and Google ADK tool-trajectory criteria, without an LLM-as-judge or
-live LangSmith/ADK wiring.
+That check always runs and is the default score (``PROAGENT_EVAL_JUDGE=ordered_subset``).
+``llm`` calls :mod:`proagent_os.eval.judge` afterwards. A parsed verdict replaces
+``passed``; a failed or unparseable call keeps this matcher and sets
+``judge_mode=ordered_subset_fallback``.
+
+This mirrors LangSmith trajectory checks and Google ADK tool-trajectory
+criteria, plus an optional local LLM judge. It does not upload traces to
+LangSmith or ADK.
 """
 
 from __future__ import annotations
@@ -76,7 +81,12 @@ class GoldenTask:
 
 @dataclass
 class EvalResult:
-    """Structured pass/fail for one golden comparison (no LLM score)."""
+    """Structured pass/fail for one golden comparison.
+
+    ``passed`` is the ordered-subset result unless ``judge_mode`` is ``llm``,
+    in which case it is the judge verdict. ``trajectory_passed`` and ``diffs``
+    always describe the matcher. ``to_dict`` is the eval report.
+    """
 
     task_id: str
     passed: bool
@@ -86,6 +96,12 @@ class EvalResult:
     diffs: List[str] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
     metering: Optional[Dict[str, Any]] = None
+    # ordered_subset (default, no chat call) | llm | ordered_subset_fallback
+    judge_mode: str = "ordered_subset"
+    judge_rationale: str = ""
+    judge_fallback: str = ""
+    trajectory_passed: Optional[bool] = None
+    final_answer: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -109,15 +125,20 @@ def compare_trajectory(
             expected_tools=expected_list,
             actual_tools=actual_list,
             diffs=[f"unsupported match mode: {match!r} (stub supports ordered_subset only)"],
+            judge_mode="ordered_subset",
+            trajectory_passed=False,
         )
     diffs = _ordered_subset_diffs(actual_list, expected_list)
+    passed = not diffs
     return EvalResult(
         task_id=task_id,
-        passed=not diffs,
+        passed=passed,
         match=match,
         expected_tools=expected_list,
         actual_tools=actual_list,
         diffs=diffs,
+        judge_mode="ordered_subset",
+        trajectory_passed=passed,
     )
 
 
@@ -187,15 +208,62 @@ def maybe_record_eval_metering(
     }
 
 
+def _select_judge(judge: Any) -> Any:
+    """Explicit judge wins. Otherwise follow ``PROAGENT_EVAL_JUDGE``."""
+    if judge is not None:
+        return judge
+    from proagent_os.config import get_settings
+    from proagent_os.eval.judge import judge_for_settings
+
+    return judge_for_settings(get_settings())
+
+
+async def _attach_judge(
+    eval_result: EvalResult,
+    *,
+    task: str,
+    final_answer: str,
+    judge: Any,
+) -> EvalResult:
+    """Run the judge after the trajectory check and fold the outcome into the report."""
+    from proagent_os.eval.judge import run_judge
+
+    if eval_result.trajectory_passed is None:
+        eval_result.trajectory_passed = eval_result.passed
+    application = await run_judge(
+        judge,
+        task=task,
+        expected_tools=eval_result.expected_tools,
+        actual_tools=eval_result.actual_tools,
+        final_answer=final_answer,
+    )
+    eval_result.final_answer = final_answer
+    if application.mode == "llm" and application.passed is not None:
+        eval_result.passed = application.passed
+        eval_result.judge_mode = "llm"
+        eval_result.judge_rationale = application.rationale
+        eval_result.judge_fallback = ""
+        return eval_result
+    eval_result.passed = bool(eval_result.trajectory_passed)
+    eval_result.judge_mode = "ordered_subset_fallback"
+    eval_result.judge_rationale = ""
+    eval_result.judge_fallback = application.fallback or "unparseable judge output"
+    return eval_result
+
+
 async def run_golden_task(
     golden: GoldenTask,
     *,
     tenant_id: Optional[str] = None,
     record_metering: bool = True,
+    judge: Any = None,
 ) -> EvalResult:
     """Run one golden task through the Orchestrator under the current LLM provider.
 
     Callers should set ``PROAGENT_LLM_PROVIDER=mock`` for deterministic CI.
+    The trajectory check always runs. ``judge`` overrides ``PROAGENT_EVAL_JUDGE``
+    when passed (including tests). ``None`` follows the setting, which defaults
+    to ordered_subset and does not call a model.
     """
     from proagent_os.db import get_db, new_id, utcnow
     from proagent_os.services import get_services
@@ -229,11 +297,21 @@ async def run_golden_task(
         match=golden.match,
         task_id=golden.id,
     )
+    final_answer = result.get("result")
+    eval_result.final_answer = final_answer if isinstance(final_answer, str) else str(final_answer or "")
     eval_result.summary = {
         **summarize_run(trace),
         "orchestrator_status": result.get("status"),
         "task_row_id": result.get("task_id"),
     }
+    selected = _select_judge(judge)
+    if selected is not None:
+        eval_result = await _attach_judge(
+            eval_result,
+            task=golden.task,
+            final_answer=eval_result.final_answer,
+            judge=selected,
+        )
     if record_metering:
         eval_result.metering = maybe_record_eval_metering(
             tid, task_id=golden.id, passed=eval_result.passed

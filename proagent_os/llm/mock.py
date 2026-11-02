@@ -64,6 +64,17 @@ def _extract_query(text: str) -> str:
 MOCK_COMPACTION_SUMMARY = "Mock compaction summary of earlier turns."
 _COMPACTION_SUMMARY_MARKER = "you summarize older conversation turns"
 
+# Stable rationales for PROAGENT_EVAL_JUDGE=llm under the mock provider.
+# Pass requires expected tools as an ordered subset and a non-empty final answer.
+# The system-prompt marker must stay aligned with eval/judge.py JUDGE_SYSTEM.
+MOCK_JUDGE_PASS_RATIONALE = (
+    "Mock judge: expected tools appear in order and the final answer is present."
+)
+MOCK_JUDGE_FAIL_RATIONALE = (
+    "Mock judge: expected tools are missing or out of order, or the final answer is empty."
+)
+_JUDGE_SYSTEM_MARKER = "you are an evaluation judge"
+
 
 def _is_compaction_summary_request(messages: List[LLMMessage]) -> bool:
     """True when the call is the session-compaction summarizer, not a planner."""
@@ -73,6 +84,61 @@ def _is_compaction_summary_request(messages: List[LLMMessage]) -> bool:
         ).lower():
             return True
     return False
+
+
+def _is_eval_judge_request(messages: List[LLMMessage]) -> bool:
+    """True when the call is the golden-task judge, not a planner or summarizer."""
+    for message in messages:
+        if message.role == "system" and _JUDGE_SYSTEM_MARKER in (message.content or "").lower():
+            return True
+    return False
+
+
+def _tools_in_order(actual: List[str], expected: List[str]) -> bool:
+    """Same ordered-subset rule as the golden matcher, local so mock does not import eval."""
+    index = 0
+    for want in expected:
+        found = False
+        while index < len(actual):
+            if actual[index] == want:
+                found = True
+                index += 1
+                break
+            index += 1
+        if not found:
+            return False
+    return True
+
+
+def _mock_judge_passed(user_text: str) -> bool:
+    try:
+        data = json.loads(user_text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    expected = data.get("expected_tools")
+    actual = data.get("actual_tools")
+    answer = data.get("final_answer")
+    if not isinstance(expected, list) or not isinstance(actual, list):
+        return False
+    if not all(isinstance(name, str) for name in expected):
+        return False
+    if not all(isinstance(name, str) for name in actual):
+        return False
+    if not isinstance(answer, str) or not answer.strip():
+        return False
+    return _tools_in_order(actual, expected)
+
+
+def _mock_judge_content(messages: List[LLMMessage]) -> str:
+    user_text = ""
+    for message in messages:
+        if message.role == "user" and message.content:
+            user_text = message.content
+    passed = _mock_judge_passed(user_text)
+    rationale = MOCK_JUDGE_PASS_RATIONALE if passed else MOCK_JUDGE_FAIL_RATIONALE
+    return json.dumps({"passed": passed, "rationale": rationale}, ensure_ascii=False)
 
 
 class MockLLMProvider(LLMProvider):
@@ -87,8 +153,10 @@ class MockLLMProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: ToolChoice = None,
     ) -> LLMResponse:
-        # Before planner/tool heuristics: a long thread can contain those phrases,
-        # and the compaction call must stay a short deterministic summary.
+        # Before planner/tool heuristics: a long thread can contain those phrases.
+        # Judge and compaction calls must stay short deterministic completions.
+        if _is_eval_judge_request(messages):
+            return LLMResponse(content=_mock_judge_content(messages), model="mock-eval-judge")
         if _is_compaction_summary_request(messages):
             return LLMResponse(content=MOCK_COMPACTION_SUMMARY, model="mock-compaction")
 

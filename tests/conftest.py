@@ -19,6 +19,8 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_OIDC_AUDIENCE", "")
     monkeypatch.setenv("PROAGENT_OIDC_CLIENT_ID", "")
     monkeypatch.setenv("PROAGENT_LLM_PROVIDER", "mock")
+    # Default trajectory matcher: judge tests opt into llm explicitly.
+    monkeypatch.setenv("PROAGENT_EVAL_JUDGE", "ordered_subset")
     # Default executor is noop: CI stays offline and approval still records execution.
     monkeypatch.setenv("PROAGENT_EXECUTOR_MODE", "noop")
     monkeypatch.setenv("PROAGENT_EXECUTOR_ON_APPROVE", "true")

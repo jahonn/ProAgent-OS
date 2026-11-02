@@ -35,7 +35,9 @@ flowchart LR
 
 Constants: `LoopPhase` in `proagent_os/harness/loop.py`. Orchestrator writes
 trace rows through `event(...)`. Helpers `tool_trajectory` / `summarize_run`
-feed the golden-task eval stub in `proagent_os/eval/` (ordered-subset; not an LLM judge).
+feed the golden-task eval in `proagent_os/eval/`. The default score is
+ordered-subset. `PROAGENT_EVAL_JUDGE=llm` adds an optional chat judge after
+that check (mock stays deterministic; failures fall back to ordered-subset).
 
 ## Inner loop (specialist tool rounds)
 
@@ -192,19 +194,29 @@ before `Tool.run` (OpenAI FunctionTool / Anthropic tool_use). Failures become
 specialist observations with `schema_validation_failed`; the tool does not execute.
 Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
 
+## Golden-task judge (optional)
+
+LangSmith and ADK can score a trajectory with an LLM judge. ProAgent’s default
+stays the offline ordered-subset matcher so CI does not call a model.
+`PROAGENT_EVAL_JUDGE=llm` runs one chat completion **after** that check, over
+the expected tools, actual tools, and final answer, and stores
+`passed` + `judge_rationale` on `EvalResult`. A raised call or unparseable
+completion keeps the matcher result and sets `judge_mode=ordered_subset_fallback`.
+The mock provider returns deterministic JSON. Details: [EVAL.md](EVAL.md).
+
 ## Stub vs planned
 
 | Shipped now | Planned (not in this cut) |
 | --- | --- |
 | Typed `LoopPhase` + `event()` trace hooks | Richer phase dashboards / live traces |
 | `tool_trajectory` / `summarize_run` helpers | Exact-match / ADK numeric trajectory scores |
-| Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
+| Golden-task runner: ordered-subset default, optional `PROAGENT_EVAL_JUDGE=llm` with ordered-subset fallback | Live LangSmith datasets; multi-criterion numeric judges |
 | Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
 | Task-run HITL mid-loop resume and execute-on-approve (`awaiting_human` + checkpoint + one `ToolRegistry` call) | Full tool-call replay; dedicated task audit; approval that survives later calls |
 | Session / conversation compaction stub (`summary` + keep last N; optional LLM summarizer flag, default extractive) | Dedicated compaction model, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
 | Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |
-| Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |
+| Existing OTel + usage metering stubs | Hosted LangSmith/ADK eval runs and dashboards |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)
 for fixture layout and matching rules.
@@ -213,7 +225,7 @@ for fixture layout and matching rules.
 
 - `proagent_os/harness/orchestrator.py` — outer + inner loops
 - `proagent_os/harness/loop.py` — phases and trajectory helpers
-- `proagent_os/eval/` — golden-task loader + trajectory compare stub
+- `proagent_os/eval/` — golden-task loader, ordered-subset compare, optional LLM judge
 - `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format + arg validation
 - `proagent_os/harness/hitl.py` — task-run pause / resume (mid-loop continue) / reject
 - `proagent_os/harness/memory.py` / `compaction.py` — conversation store + session compaction stub
