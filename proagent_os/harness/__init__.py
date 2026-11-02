@@ -2,6 +2,7 @@ from proagent_os.harness.compaction import (
     CompactionConfig,
     CompactionResult,
     ExtractiveSummarizer,
+    LlmSummarizer,
     compact_messages,
     messages_for_llm,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "CompactionResult",
     "ConversationMemory",
     "ExtractiveSummarizer",
+    "LlmSummarizer",
     "compact_messages",
     "messages_for_llm",
     "LoopPhase",

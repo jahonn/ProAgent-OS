@@ -183,17 +183,21 @@ class Orchestrator:
         brand_block = brand.prompt_block() if brand else f"Tenant: {tenant_id}"
 
         if compaction.compacted:
-            trace.append(
-                event(
-                    LoopPhase.COMPACTION,
-                    conversation_id=conversation_id,
-                    dropped_count=compaction.dropped_count,
-                    reason=compaction.reason,
-                    strategy=(compaction.meta or {}).get("strategy"),
-                    approx_chars_before=(compaction.meta or {}).get("approx_chars_before"),
-                    kept_recent=(compaction.meta or {}).get("kept_recent"),
-                )
-            )
+            meta = compaction.meta or {}
+            compaction_event: Dict[str, Any] = {
+                "conversation_id": conversation_id,
+                "dropped_count": compaction.dropped_count,
+                "reason": compaction.reason,
+                "strategy": meta.get("strategy"),
+                "approx_chars_before": meta.get("approx_chars_before"),
+                "kept_recent": meta.get("kept_recent"),
+            }
+            # Present only for the optional LLM summarizer (and its fallback).
+            # The extractive default omits these so existing traces stay the same.
+            for key in ("summarizer_mode", "summarizer_fallback"):
+                if meta.get(key):
+                    compaction_event[key] = meta[key]
+            trace.append(event(LoopPhase.COMPACTION, **compaction_event))
 
         settings = get_settings()
         plan = await self._plan(input_text, brand_block, trace, prior_context=prior_block)

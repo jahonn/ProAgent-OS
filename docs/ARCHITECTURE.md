@@ -133,6 +133,9 @@ vendor LangGraph/CrewAI; we keep a small FastAPI + SQLite product shell.
 Long chats are compacted before planner/specialist prompts so the model window
 stays bounded — aligned with OpenAI session/conversation management and
 Anthropic’s “keep recent tool results, compress older history” practice.
+`PROAGENT_COMPACTION_SUMMARIZER` defaults to `extractive` (no model call).
+`llm` summarizes the folded turns with the configured chat client and falls
+back to extractive on failure, recorded on summary meta and the compaction trace.
 
 ```mermaid
 flowchart LR
@@ -146,7 +149,7 @@ flowchart LR
 | Piece | Now (stub) | Planned |
 | --- | --- | --- |
 | Trigger | `PROAGENT_COMPACTION_MAX_MESSAGES` / `MAX_CHARS` | Per-tenant token budgets |
-| Strategy | Keep system + last N; extractive summary of older | LLM summarizer; structured memory objects |
+| Strategy | Keep system + last N; extractive summary of older. Optional `PROAGENT_COMPACTION_SUMMARIZER=llm` (chat provider, extractive fallback) | Dedicated compaction model; structured memory objects |
 | Tokens | `approx_chars` | Optional tiktoken / provider usage |
 | Audit | `summary` message meta + `tenant_memory` kind=`compaction`; trace phase `compaction` | Compaction event table / dashboards |
 | Wire-up | `ConversationMemory.compact_if_needed` + prior-context block in orchestrator | Full session object shared across runner turns |
@@ -198,7 +201,7 @@ Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
 | Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
 | Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
 | Task-run HITL mid-loop resume and execute-on-approve (`awaiting_human` + checkpoint + one `ToolRegistry` call) | Full tool-call replay; dedicated task audit; approval that survives later calls |
-| Session / conversation compaction stub (`summary` + keep last N) | LLM summarizer, tiktoken budgets, per-tenant limits |
+| Session / conversation compaction stub (`summary` + keep last N; optional LLM summarizer flag, default extractive) | Dedicated compaction model, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
 | Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |
 | Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |

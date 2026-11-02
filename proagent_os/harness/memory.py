@@ -13,6 +13,7 @@ from proagent_os.harness.compaction import (
     compact_messages,
     config_from_settings,
     messages_for_llm,
+    summarizer_for_settings,
 )
 
 
@@ -38,6 +39,17 @@ class ConversationMemory:
         if self._compaction_config is not None:
             return self._compaction_config
         return config_from_settings(get_settings())
+
+    def _summarizer(self) -> Optional[Summarizer]:
+        """Injected summarizer, or the LLM one when the flag says so.
+
+        ``None`` keeps :func:`compact_messages` on the extractive default.
+        """
+        if self.summarizer is not None:
+            return self.summarizer
+        return summarizer_for_settings(
+            get_settings(), max_chars=self._config().summary_max_chars
+        )
 
     def create_conversation(self, tenant_id: str, title: str = "") -> str:
         cid = new_id("conv")
@@ -128,7 +140,7 @@ class ConversationMemory:
                 }
             )
 
-        result = compact_messages(as_maps, config=self._config(), summarizer=self.summarizer)
+        result = compact_messages(as_maps, config=self._config(), summarizer=self._summarizer())
         if not result.compacted or not persist:
             return result
 
@@ -194,7 +206,7 @@ class ConversationMemory:
         ]
         # If a persisted summary exists, prefer the view that folds older turns
         # via compact_messages (idempotent when already under threshold).
-        result = compact_messages(as_maps, config=cfg, summarizer=self.summarizer)
+        result = compact_messages(as_maps, config=cfg, summarizer=self._summarizer())
         wire = messages_for_llm(result.messages)
         if limit is not None and limit > 0:
             return wire[-limit:]

@@ -59,6 +59,22 @@ def _extract_query(text: str) -> str:
     return lines[-1][:200] if lines else "overview"
 
 
+# Stable text for PROAGENT_COMPACTION_SUMMARIZER=llm under the mock provider.
+# Distinct from ExtractiveSummarizer output ("Earlier turns:").
+MOCK_COMPACTION_SUMMARY = "Mock compaction summary of earlier turns."
+_COMPACTION_SUMMARY_MARKER = "you summarize older conversation turns"
+
+
+def _is_compaction_summary_request(messages: List[LLMMessage]) -> bool:
+    """True when the call is the session-compaction summarizer, not a planner."""
+    for message in messages:
+        if message.role == "system" and _COMPACTION_SUMMARY_MARKER in (
+            message.content or ""
+        ).lower():
+            return True
+    return False
+
+
 class MockLLMProvider(LLMProvider):
     """Deterministic offline LLM stub with native multi-step tool_calls."""
 
@@ -71,6 +87,11 @@ class MockLLMProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: ToolChoice = None,
     ) -> LLMResponse:
+        # Before planner/tool heuristics: a long thread can contain those phrases,
+        # and the compaction call must stay a short deterministic summary.
+        if _is_compaction_summary_request(messages):
+            return LLMResponse(content=MOCK_COMPACTION_SUMMARY, model="mock-compaction")
+
         joined = "\n".join((m.content or "") for m in messages)
         role_hint = ""
         for m in messages:
