@@ -135,8 +135,8 @@ export PROAGENT_DB_PATH=./data/demo.db
 uvicorn proagent_os.main:app --host 0.0.0.0 --port 8080
 ```
 
-- http://localhost:8080 — header **ProAgent OS**, badge `v0.1.0`, sidebar tabs Task console, Knowledge base, Recommendations, Skills, Monitors, Dashboard. Paste `pk_demo_acme_analytics` and choose **Save key**.
-- http://localhost:8080/health — `{"status":"ok","version":"0.1.0","llm":"mock"}` when the provider is mock.
+- http://localhost:8080 — header **ProAgent OS**, badge `v0.1.1`, sidebar tabs Task console, Knowledge base, Recommendations, Skills, Monitors, Dashboard. Paste `pk_demo_acme_analytics` and choose **Save key**.
+- http://localhost:8080/health — `{"status":"ok","version":"0.1.1","llm":"mock"}` when the provider is mock.
 - http://localhost:8080/docs — FastAPI reference for `/api/v1/*`.
 
 Recommendations for this tenant: one `executed` (the monitor, via the noop executor) and one `pending` (the analyst tool call). The dashboard tab shows the same outcome metric as the script.

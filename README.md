@@ -9,9 +9,9 @@
 
 Product name: **ProAgent OS** (`proagent-os`). Original design and code. It is an independent project and is not affiliated with any third-party agent product.
 
-> Status: **MVP / early open source** (0.1.0). Suitable for demos, scaffolding vertical packs, and self-hosted experiments. Read the [roadmap (issue #2)](https://github.com/jahonn/ProAgent-OS/issues/2) before any production SaaS use. History: [CHANGELOG.md](CHANGELOG.md).
+> Status: **MVP / early open source** (0.1.1). Suitable for demos, scaffolding vertical packs, and self-hosted experiments. Read the [roadmap (issue #2)](https://github.com/jahonn/ProAgent-OS/issues/2) before any production SaaS use. History: [CHANGELOG.md](CHANGELOG.md).
 >
-> **Releases / Changelog:** Draft notes for proposed v0.1.1: [docs/RELEASE_NOTES_v0.1.1.md](docs/RELEASE_NOTES_v0.1.1.md) (not tagged yet).
+> **Releases / Changelog:** Upcoming **v0.1.1** (first public GitHub Release): [docs/RELEASE_NOTES_v0.1.1.md](docs/RELEASE_NOTES_v0.1.1.md). Canonical detail: [CHANGELOG.md](CHANGELOG.md) `[0.1.1]`.
 
 **Scan:** [Who it is for](#who-it-is-for) · [Quick start](#quick-start-mock-llm) · [Positioning](#positioning) · [Architecture](#architecture) · [Retrieval](#retrieval-modes) · [Roadmap](#roadmap)
 
@@ -83,7 +83,7 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 | Plan-and-replan | Stub: optional outer replan after specialists (`PROAGENT_REPLAN_*`, default off) | Plan-and-execute / replan nodes you wire | Crew replanning you add |
 | Outcome loop | `record_outcome` stores a metric and nudges a skill weight | Evaluation in the tools you place around the library | Evaluation in the tools you place around the library |
 | Tenancy | FastAPI `/api/v1` and one Bearer API key per tenant | Your service owns auth and tenancy | Your service owns auth and tenancy |
-| This release | v0.1.0 early MVP. Approve can run a noop or a configured webhook. It does not run action code | Large ecosystem; production shape is yours | Large ecosystem; production shape is yours |
+| This release | v0.1.1 early MVP. Approve can run a noop or a configured webhook. It does not run action code | Large ecosystem; production shape is yours | Large ecosystem; production shape is yours |
 
 ## Architecture
 
@@ -379,7 +379,7 @@ Known gaps in this tree:
 - A real evaluation harness (the learning loop is score nudges)
 - A payment provider. `usage_events` and `GET /api/v1/usage` are a metering stub (`billing: stub`) and do not create charges. OpenTelemetry export is optional (`pip install 'proagent-os[otel]'`, `PROAGENT_OTEL_ENABLED=true`) and stays off in the default install.
 - A richer product UI and i18n
-- The v0.1.0 GitHub Release tag (this changelog describes the tree; the tag is still open on the roadmap)
+- First public GitHub Release **v0.1.1** — [release notes](docs/RELEASE_NOTES_v0.1.1.md), [CHANGELOG](CHANGELOG.md) `[0.1.1]`. The annotated tag is cut from the merged commit ([issue #2](https://github.com/jahonn/ProAgent-OS/issues/2)).
 
 ## Security
 
