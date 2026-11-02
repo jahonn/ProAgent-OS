@@ -133,8 +133,59 @@ class EmitRecommendationTool(Tool):
         )
 
 
+class RequestRunApprovalTool(Tool):
+    """Ask a human to confirm before the task run continues (run-level HITL).
+
+    Distinct from ``emit_recommendation`` (proactive inbox). The orchestrator
+    honors ``requires_human_approval`` and pauses without treating ``action`` as
+    a URL or shell command. ``run`` is a safety fallback only.
+    """
+
+    name = "request_run_approval"
+    description = (
+        "Pause this task run and ask a human to approve or reject a consequential "
+        "action before continuing. Prefer this for run interruptions; use "
+        "emit_recommendation for the separate proactive inbox."
+    )
+    requires_human_approval = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "description": "Why human confirmation is needed"},
+            "action": {
+                "type": "object",
+                "description": "Opaque proposed action JSON (never executed as URL/shell)",
+            },
+        },
+        "required": ["reason"],
+    }
+
+    async def run(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        # Orchestrator should pause before invoke. If we get here, still do not execute.
+        reason = arguments.get("reason") or "human_approval_required"
+        raw_action = arguments.get("action") or {}
+        action = raw_action if isinstance(raw_action, dict) else {"_dropped_non_object": True}
+        return ToolResult(
+            ok=True,
+            output={
+                "needs_human_approval": True,
+                "reason": reason,
+                "action": action,
+                "task_id": ctx.task_id,
+                "executed": False,
+            },
+        )
+
+
 def build_builtin_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    for tool in (HttpFetchTool(), FileReadTool(), KbSearchTool(), ClockTool(), EmitRecommendationTool()):
+    for tool in (
+        HttpFetchTool(),
+        FileReadTool(),
+        KbSearchTool(),
+        ClockTool(),
+        EmitRecommendationTool(),
+        RequestRunApprovalTool(),
+    ):
         registry.register(tool)
     return registry

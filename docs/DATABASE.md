@@ -22,6 +22,8 @@ Versions are the ordered steps in `proagent_os/migrations.py`. Each step is SQL,
 
 `0003_usage_events` adds the usage-metering stub table `usage_events` (`tenant_id`, `kind`, `quantity`, `created_at`) and `idx_usage_events_tenant_kind`. Kinds are `llm_tokens`, `kb_search`, and `recommendation_execute`. The table is a local counter. It is not a payment ledger, and this migration does not import OpenTelemetry.
 
+`0005_task_hitl_pause` adds task-run HITL columns on `tasks`: `pause_reason`, `pending_action_json` (opaque JSON, never treated as a URL or shell command), `hitl_decision`, `hitl_decided_at`, plus `idx_tasks_tenant_status`. Status values used by the stub include `running`, `awaiting_human`, `completed`, and `cancelled`.
+
 `0004_tenant_role_overrides` adds `tenant_role_overrides` (`tenant_id`, `role`, `updated_at`). `role` is `tenant_operator` or `tenant_readonly`. It records an API-key role for one tenant. An empty table means every tenant key is `tenant_operator`. The admin key is not a row in this table. See [AUTH.md](AUTH.md).
 
 A partial file (for example a `tenants` table from before `key_status` existed, without the rest of the baseline tables) is not stamped. Version 1 creates the missing tables and adds `key_status` when that column is absent.

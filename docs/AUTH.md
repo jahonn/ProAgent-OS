@@ -41,11 +41,12 @@ curl -s -X PUT http://localhost:8080/api/v1/tenants/ten_xxx/role \
 | `POST /api/v1/tenants/me/api-key/revoke` | `apikey.revoke_self` | 403 |
 | `GET /api/v1/recommendations` | `recommendation.read` | allowed |
 | `POST .../approve`, `.../reject`, `.../decide` | `recommendation.decide` | 403, and the row stays `pending` |
+| `POST /api/v1/tasks/{id}/pause` / `resume` / `reject` | `recommendation.decide` (reused for the task-run HITL stub) | 403; task status unchanged |
 | `GET /api/v1/usage` | `usage.read` | allowed for that tenant only |
 
 Approve, reject, and execute share `recommendation.decide`. An admin key on those routes is still HTTP 400 `Use a tenant API key`, which is the previous behavior. Usage for another tenant is still HTTP 403.
 
-**Not gated yet.** Tasks, knowledge-base writes, monitors, skill invoke, brand update, and the rest of the tenant API still accept any usable tenant key, including `tenant_readonly`. Treating readonly as a global read-only policy is planned. It is not what this sketch does.
+**Not gated yet.** Creating tasks, knowledge-base writes, monitors, skill invoke, brand update, and the rest of the tenant API still accept any usable tenant key, including `tenant_readonly`. Treating readonly as a global read-only policy is planned. It is not what this sketch does.
 
 ## OIDC mode (stub)
 

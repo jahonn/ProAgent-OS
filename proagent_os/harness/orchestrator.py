@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from proagent_os.config import get_settings
 from proagent_os.db import dumps, get_db, new_id, utcnow
+from proagent_os.harness.hitl import RunPaused, TaskHitlService, sanitize_pending_action
 from proagent_os.harness.loop import LoopPhase, event
 from proagent_os.harness.memory import ConversationMemory
 from proagent_os.harness.registry import AgentRegistry
@@ -157,11 +158,63 @@ class Orchestrator:
 
         step_results: List[Dict[str, Any]] = []
         ctx = ToolContext(tenant_id=tenant_id, task_id=task_id)
-        for step in plan.get("steps", []):
-            agent_id = step.get("agent", "researcher")
-            goal = step.get("goal", input_text)
-            result = await self._run_specialist(agent_id, goal, input_text, brand_block, ctx, trace)
-            step_results.append({"agent": agent_id, "goal": goal, "result": result})
+        hitl = TaskHitlService()
+        try:
+            for step in plan.get("steps", []):
+                agent_id = step.get("agent", "researcher")
+                goal = step.get("goal", input_text)
+                result = await self._run_specialist(
+                    agent_id, goal, input_text, brand_block, ctx, trace
+                )
+                step_results.append({"agent": agent_id, "goal": goal, "result": result})
+        except RunPaused as paused:
+            # Persist plan + partial specialist results, then await human.
+            partial = ""
+            if step_results:
+                partial = json.dumps(step_results, ensure_ascii=False, default=str)[:4000]
+            # Flush current trace into the row before pause helper appends HITL event.
+            self.db.update(
+                "tasks",
+                {
+                    "plan_json": dumps(plan),
+                    "trace_json": dumps(trace),
+                    "result": partial,
+                    "updated_at": utcnow(),
+                },
+                "id=?",
+                (task_id,),
+            )
+            paused_row = hitl.pause_task(
+                tenant_id,
+                task_id,
+                reason=paused.reason,
+                pending_action=paused.pending_action,
+                actor="orchestrator",
+                trace_extra={
+                    "agent": paused.agent_id,
+                    "tool": paused.tool_name,
+                    "tool_call_id": paused.tool_call_id,
+                },
+                plan=plan,
+                partial_result=partial,
+            )
+            self.memory.add_message(
+                conversation_id,
+                "assistant",
+                f"[awaiting_human] {paused.reason}",
+                meta={"task_id": task_id, "status": "awaiting_human"},
+            )
+            return {
+                "task_id": task_id,
+                "conversation_id": conversation_id,
+                "status": paused_row["status"],
+                "plan": plan,
+                "result": paused_row.get("result") or "",
+                "trace": paused_row.get("trace") or [],
+                "pause_reason": paused_row.get("pause_reason") or paused.reason,
+                "pending_action": paused_row.get("pending_action") or {},
+                "hitl": "stub",
+            }
 
         final = await self._aggregate(input_text, step_results, brand_block, trace)
 
@@ -277,8 +330,41 @@ class Orchestrator:
                     "kb_search",
                     "emit_recommendation",
                     "clock",
+                    "request_run_approval",
                 }
                 t0 = time.perf_counter()
+                tool_obj = self.tools.get(tc.name)
+                if (
+                    allowed
+                    and tool_obj is not None
+                    and getattr(tool_obj, "requires_human_approval", False)
+                ):
+                    args = tc.arguments if isinstance(tc.arguments, dict) else {}
+                    reason = str(args.get("reason") or f"approval required for tool {tc.name}")
+                    pending = sanitize_pending_action(args.get("action") if "action" in args else args)
+                    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+                    trace.append(
+                        event(
+                            LoopPhase.TOOL,
+                            agent=agent_id,
+                            round=round_i,
+                            id=tc.id,
+                            name=tc.name,
+                            args_summary=_args_summary(args),
+                            ok=True,
+                            error=None,
+                            latency_ms=latency_ms,
+                            hitl_pause=True,
+                            output_preview="paused_for_human",
+                        )
+                    )
+                    raise RunPaused(
+                        reason=reason,
+                        pending_action=pending,
+                        agent_id=agent_id,
+                        tool_name=tc.name,
+                        tool_call_id=tc.id,
+                    )
                 if not allowed:
                     ok, output, error = False, None, f"tool not allowed: {tc.name}"
                 else:

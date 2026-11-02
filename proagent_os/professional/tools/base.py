@@ -23,6 +23,9 @@ class ToolResult:
 class Tool(ABC):
     name: str
     description: str
+    # When True, the orchestrator pauses the task run (awaiting_human) instead of
+    # invoking ``run``. Arguments are stored as opaque pending_action JSON only.
+    requires_human_approval: bool = False
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {},

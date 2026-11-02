@@ -76,13 +76,14 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 | Agent shape | Planner → specialists (native tool calls) → aggregator | The graph or chain you compose | The crew and tasks you define |
 | Knowledge | Per-tenant KB. BM25 by default; optional offline hybrid stub | Retrievers and stores you connect | Knowledge sources you attach |
 | Proactive HITL | Interval monitors file recommendations; approve can run a noop or one configured webhook | Human-input steps you add to your graph | Human-input steps you add to your crew or flow |
+| Task-run HITL | Stub: pause run to `awaiting_human`, resume/reject via API (OpenAI interruption / Anthropic confirm-action shaped) | Interrupt / human-in-the-loop nodes you wire | Human-input / approval steps you add |
 | Outcome loop | `record_outcome` stores a metric and nudges a skill weight | Evaluation in the tools you place around the library | Evaluation in the tools you place around the library |
 | Tenancy | FastAPI `/api/v1` and one Bearer API key per tenant | Your service owns auth and tenancy | Your service owns auth and tenancy |
 | This release | v0.1.0 early MVP. Approve can run a noop or a configured webhook. It does not run action code | Large ecosystem; production shape is yours | Large ecosystem; production shape is yours |
 
 ## Architecture
 
-Harness loop phases, industry mapping, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` in `proagent_os/harness/loop.py`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md) (`proagent_os/eval/`).
+Harness loop phases, industry mapping, task-run HITL pause/resume stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md) (`proagent_os/eval/`).
 
 Planner and aggregator stay text-only. Specialists call tools natively, for up to `PROAGENT_MAX_TOOL_ROUNDS` rounds (JSON-in-content is still accepted).
 
@@ -114,7 +115,7 @@ flowchart TB
   metrics --> learning["Skill-weight nudge and tenant memory"]
 ```
 
-**Built-in tools:** `http_fetch` · `file_read` · `kb_search` · `clock` · `emit_recommendation`
+**Built-in tools:** `http_fetch` · `file_read` · `kb_search` · `clock` · `emit_recommendation` · `request_run_approval`
 
 **Core agents:** `planner` · `researcher` · `analyst` · `aggregator` (plus agents merged from `verticals/*/agents/`)
 
@@ -330,7 +331,7 @@ The admin key is role `admin`. A new tenant key is role `tenant_operator`. An ad
 - Rotate is a hard cutover. The response includes the new `api_key` once, and the previous bearer returns 401 on the next call. There is no grace window. Revoke returns 401 `Invalid API key` for that bearer (same error as an unknown key). The tenant cannot undo a revoke; an admin rotate on that tenant id mints a replacement. `tenant_api_key_audit` and process logs store a short prefix and a SHA-256, not the raw key.
 - `/api/v1/*` is rate limited in-process (default 120 requests / 60 seconds). Buckets are per tenant id, plus separate admin and unrecognized-bearer buckets. Over the limit the body is `{"detail":"Rate limit exceeded"}` with `Retry-After`. Counters reset when the process restarts and are not shared across workers. Redis is not used. `/health` is not limited.
 - `GET /api/v1/agents` · `GET /api/v1/agents/tools`
-- `POST /api/v1/tasks` · `GET /api/v1/tasks/{id}`
+- `POST /api/v1/tasks` · `GET /api/v1/tasks` · `GET /api/v1/tasks/{id}` · `POST /api/v1/tasks/{id}/pause|resume|reject` — run-level HITL stub (`running`→`awaiting_human`→`completed`/`cancelled`). Pause stores opaque `pending_action` JSON (never URL/shell). Resume/reject reuse `recommendation.decide` RBAC. Resume marks completed with the decision recorded (does not continue the mid-run tool loop yet).
 - `POST /api/v1/kb/ingest/url|text|file` · `POST /api/v1/kb/search`
 - `GET /api/v1/skills` · `POST /api/v1/skills/{id}/invoke`
 - `POST /api/v1/monitors` · `POST /api/v1/monitors/{id}/run`
