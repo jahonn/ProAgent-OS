@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-_Nothing yet._
+- HITL approve executes the paused gated tool, then continues the run. A tool with `requires_human_approval` pauses with a structured `pending_action` snapshot (`kind=gated_tool`, tool name, call id, schema-validated `arguments`, opaque `proposed`). `POST /api/v1/tasks/{id}/resume` re-invokes that tool once through `ToolRegistry` (schema checked again; only if the tool still requires approval and the snapshot matches the checkpoint), records the observation, and finishes remaining plan steps. `PROAGENT_HITL_EXECUTE_ON_APPROVE` defaults to true; set false to continue without running the tool. The legacy continue-off stub does not run it. Reject cancels and never executes. Snapshots are not URLs or shell commands. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TOOLS.md](docs/TOOLS.md).
 
 ## [0.1.1] - 2026-11-02
 

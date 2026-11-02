@@ -74,24 +74,30 @@ replacing the recommendation inbox.
 
 ```mermaid
 flowchart LR
-  run[Task running] -->|request_run_approval or POST pause| pause[awaiting_human]
-  pause -->|POST resume + checkpoint| cont[running again: inject decision + finish plan]
+  run[Task running] -->|requires_human_approval tool or POST pause| pause[awaiting_human]
+  pause -->|POST resume + checkpoint| gate{Execute gated tool?}
+  gate -->|snapshot + both flags on| once[ToolRegistry.invoke once]
+  once --> cont[inject observation + finish plan]
+  gate -->|no snapshot or execute flag off| cont
   cont --> done[completed + hitl_decision=approved]
-  pause -->|POST resume no checkpoint or flag off| stub[completed stub]
-  pause -->|POST reject| cancel[cancelled + hitl_decision=rejected]
+  pause -->|continue flag off or no checkpoint| stub[completed stub, tool not run]
+  pause -->|POST reject| cancel[cancelled, tool not run]
 ```
 
 | Piece | Behavior now | Still planned |
 | --- | --- | --- |
 | Status | `running` → `awaiting_human` → (approve) continue → `completed`, or reject → `cancelled` | Dedicated task audit table |
-| Trigger | Tool with `requires_human_approval` (builtin `request_run_approval`) or `POST /api/v1/tasks/{id}/pause` | Guardrail / policy interrupts mid-tool batch |
-| Payload | `pending_action_json` opaque JSON; never URL/shell | Typed action schemas + dry-run previews |
-| Checkpoint | `hitl_checkpoint_json` (migration `0006`): plan, completed steps, pause locus | Full message-history / tool-call replay |
+| Trigger | Tool with `requires_human_approval` (builtin `request_run_approval`, or any registered tool that sets the flag) or `POST /api/v1/tasks/{id}/pause` | Guardrail / policy interrupts mid-tool batch |
+| Payload | `pending_action_json`: gated pauses store `{kind: gated_tool, tool, tool_call_id, arguments, proposed}`. `arguments` is the validated snapshot re-invoked on approve. `proposed` is opaque human context (often the `action` object). Never interpreted as a URL or shell command. Manual pause payloads stay opaque objects with no tool execution. | Typed action schemas + dry-run previews |
+| Checkpoint | `hitl_checkpoint_json` (migration `0006`): plan, completed steps, pause locus, and `gated_arguments` copied from the snapshot | Full message-history / tool-call replay |
 | Decide API | `POST .../resume`, `POST .../reject` (RBAC reuses `recommendation.decide`) | Dedicated `task.decide` permission |
-| Orchestrator | On approve with checkpoint + `PROAGENT_HITL_RESUME_CONTINUE=true` (default): inject human decision into the paused specialist, run remaining plan steps, aggregate. Flag false or no checkpoint: legacy mark-completed stub. Reject never continues. | Execute gated side-effect tools after approve |
+| Orchestrator | On approve with checkpoint + `PROAGENT_HITL_RESUME_CONTINUE=true` (default): if `PROAGENT_HITL_EXECUTE_ON_APPROVE` is true (default) and the snapshot matches the checkpoint, `ToolRegistry.invoke` once (schema checked again; tool must still `requires_human_approval`), inject that observation, finish remaining plan steps, aggregate. Execute flag false: continue with an ack and do not run the tool. Continue flag false or no checkpoint: legacy mark-completed stub, tool not run. Reject never continues and never executes. | Approval that lasts across later calls; crash-safe exactly-once if the process dies after the tool runs |
 
-Toggle: `PROAGENT_HITL_RESUME_CONTINUE` (default `true`). Reject/cancel paths are
-unchanged either way.
+Toggles: `PROAGENT_HITL_RESUME_CONTINUE` (default `true`) and
+`PROAGENT_HITL_EXECUTE_ON_APPROVE` (default `true`). Execute applies only on
+the continue path. A tool name in the snapshot cannot select `http_fetch` or
+any other tool that does not set `requires_human_approval`. Reject/cancel
+never runs the gated tool.
 
 Code: `proagent_os/harness/hitl.py`, `Orchestrator.resume_after_hitl`, migrations
 `0005_task_hitl_pause` + `0006_hitl_checkpoint`. Trace phase `hitl`
@@ -191,7 +197,7 @@ Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
 | `tool_trajectory` / `summarize_run` helpers | Exact-match / ADK numeric trajectory scores |
 | Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
 | Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
-| Task-run HITL mid-loop resume (`awaiting_human` + checkpoint) | Full tool-call replay; dedicated task audit; gated tool execute |
+| Task-run HITL mid-loop resume and execute-on-approve (`awaiting_human` + checkpoint + one `ToolRegistry` call) | Full tool-call replay; dedicated task audit; approval that survives later calls |
 | Session / conversation compaction stub (`summary` + keep last N) | LLM summarizer, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
 | Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |

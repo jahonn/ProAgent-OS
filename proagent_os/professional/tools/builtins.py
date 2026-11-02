@@ -134,11 +134,12 @@ class EmitRecommendationTool(Tool):
 
 
 class RequestRunApprovalTool(Tool):
-    """Ask a human to confirm before the task run continues (run-level HITL).
+    """Ask a human to confirm before this gate's body runs (run-level HITL).
 
     Distinct from ``emit_recommendation`` (proactive inbox). The orchestrator
-    honors ``requires_human_approval`` and pauses without treating ``action`` as
-    a URL or shell command. ``run`` is a safety fallback only.
+    honors ``requires_human_approval`` and pauses before ``run``. On approve it
+    calls ``run`` once through ToolRegistry. ``action`` is echoed as data. It
+    is never fetched, shelled, or dispatched as another tool.
     """
 
     name = "request_run_approval"
@@ -161,18 +162,24 @@ class RequestRunApprovalTool(Tool):
     }
 
     async def run(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        # Orchestrator should pause before invoke. If we get here, still do not execute.
+        """Record the gate after human approve.
+
+        The orchestrator invokes this only on approve (or a direct registry
+        call). ``action`` stays opaque JSON: no HTTP, no shell, no nested tool.
+        """
         reason = arguments.get("reason") or "human_approval_required"
         raw_action = arguments.get("action") or {}
         action = raw_action if isinstance(raw_action, dict) else {"_dropped_non_object": True}
         return ToolResult(
             ok=True,
             output={
-                "needs_human_approval": True,
-                "reason": reason,
+                "needs_human_approval": False,
+                "approved": True,
+                "reason": str(reason),
                 "action": action,
                 "task_id": ctx.task_id,
-                "executed": False,
+                "executed": True,
+                "side_effect": "approval_recorded",
             },
         )
 

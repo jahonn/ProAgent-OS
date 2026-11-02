@@ -91,8 +91,12 @@ async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None
 
     Default (``PROAGENT_HITL_RESUME_CONTINUE=true``): when the orchestrator stored
     a checkpoint, re-enter the specialist loop with the human decision injected,
-    then finish remaining plan steps (OpenAI / LangGraph shaped). Without a
-    checkpoint, or when the flag is false, marks ``completed`` (legacy stub).
+    then finish remaining plan steps (OpenAI / LangGraph shaped). If
+    ``PROAGENT_HITL_EXECUTE_ON_APPROVE`` is also true (default) and the pause
+    stored a gated-tool snapshot, that tool runs once through ToolRegistry
+    (schema checked again) before the specialist continues. Without a
+    checkpoint, or when the continue flag is false, marks ``completed``
+    (legacy stub) and does not run the tool.
     """
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
@@ -113,7 +117,10 @@ async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None
 
 @router.post("/{task_id}/reject")
 def reject_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None = None) -> dict:
-    """Reject a paused run: awaiting_human → cancelled. Never continues."""
+    """Reject a paused run: awaiting_human → cancelled.
+
+    Never continues the specialist loop and never executes a gated tool.
+    """
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
     enforce(tenant, Permission.RECOMMENDATION_DECIDE)

@@ -15,22 +15,30 @@ confirmation can move to ``awaiting_human`` instead.
 
 ``pending_action_json`` is opaque JSON data for humans and auditors. It is
 never treated as a URL, shell command, or code to execute (same rule as
-recommendation executors).
+recommendation executors). When a tool with ``requires_human_approval`` pauses
+the run, the payload is a structured snapshot (``kind=gated_tool``, tool name,
+validated arguments). Approve may re-invoke that tool through ``ToolRegistry``
+only — never by interpreting free text as a URL or shell command.
 
 ``hitl_checkpoint_json`` is orchestrator resume state (plan, completed steps,
-pause locus). Also opaque — never URL/shell.
+pause locus, argument snapshot). Also opaque — never URL/shell.
 
 **Resume:** when ``PROAGENT_HITL_RESUME_CONTINUE`` is true (default) and a
-checkpoint exists, approve re-opens the task to ``running`` so the orchestrator
-can inject the human decision and continue remaining plan steps. Without a
-checkpoint, or when the flag is false, approve still marks ``completed``
-(legacy stub). Reject always cancels; it never continues.
+checkpoint exists, approve re-opens the task to ``running``. If
+``PROAGENT_HITL_EXECUTE_ON_APPROVE`` is also true (default) and the pending
+payload is a gated-tool snapshot, the orchestrator runs that tool once
+(schema checked again) and injects the observation, then continues remaining
+plan steps. Execute flag false: continue with an ack and do not run the tool.
+Without a checkpoint, or when the continue flag is false, approve still marks
+``completed`` (legacy stub) and does not run the tool. Reject always cancels;
+it never continues and never executes the gated tool.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from proagent_os.db import dumps, get_db, loads, utcnow
@@ -47,6 +55,12 @@ DECISION_APPROVED = "approved"
 DECISION_REJECTED = "rejected"
 
 CHECKPOINT_VERSION = 1
+
+# Structured pending_action written when a requires_human_approval tool pauses.
+# ``arguments`` is the validated snapshot. It is not a shell string or a URL.
+GATED_TOOL_KIND = "gated_tool"
+GATED_PENDING_VERSION = 1
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 _MAX_REASON_LEN = 2000
 _MAX_PAYLOAD_CHARS = 16_000
@@ -70,6 +84,64 @@ def sanitize_pending_action(raw: Any) -> Dict[str, Any]:
         }
     parsed = json.loads(encoded)
     return parsed if isinstance(parsed, dict) else {"_dropped_non_object": True}
+
+
+def build_gated_pending_action(
+    *,
+    tool_name: str,
+    tool_call_id: str,
+    arguments: Dict[str, Any],
+    proposed: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Snapshot a paused tool call so approve can re-invoke that same tool.
+
+    ``arguments`` must already have passed schema validation. ``proposed`` is
+    optional human-facing context (often ``arguments["action"]``). Callers
+    execute only ``arguments``, and only through ToolRegistry — never
+    ``proposed``, and never as a URL or shell command.
+    """
+    args = arguments if isinstance(arguments, dict) else {}
+    proposed_obj = proposed if isinstance(proposed, dict) else {}
+    name = tool_name if isinstance(tool_name, str) else ""
+    call_id = tool_call_id if isinstance(tool_call_id, str) else ""
+    return sanitize_pending_action(
+        {
+            "v": GATED_PENDING_VERSION,
+            "kind": GATED_TOOL_KIND,
+            "tool": name,
+            "tool_call_id": call_id,
+            "arguments": args,
+            "proposed": proposed_obj,
+        }
+    )
+
+
+def parse_gated_tool_call(pending: Any) -> Optional[Dict[str, Any]]:
+    """Return ``{tool, tool_call_id, arguments}`` for a gated snapshot.
+
+    Returns None for opaque human JSON, non-objects, URLs, and shell-like
+    names. This function does not execute anything.
+    """
+    if not isinstance(pending, dict):
+        return None
+    if pending.get("_truncated") or pending.get("_dropped_non_object"):
+        return None
+    if pending.get("kind") != GATED_TOOL_KIND:
+        return None
+    if pending.get("v") != GATED_PENDING_VERSION:
+        return None
+    tool = pending.get("tool")
+    if not isinstance(tool, str) or _TOOL_NAME_RE.match(tool) is None:
+        return None
+    args = pending.get("arguments")
+    if not isinstance(args, dict):
+        return None
+    call_id = pending.get("tool_call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        call_id = "hitl_approved"
+    else:
+        call_id = call_id.strip()[:128]
+    return {"tool": tool, "tool_call_id": call_id, "arguments": args}
 
 
 def sanitize_checkpoint(raw: Any) -> Dict[str, Any]:

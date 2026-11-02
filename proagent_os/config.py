@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # Set false to restore the v0.1.x stub (approve → mark completed, no continue).
     # Reject/cancel paths are unchanged either way. See docs/ARCHITECTURE.md.
     hitl_resume_continue: bool = True
+    # After a mid-loop approve, run the paused requires_human_approval tool once
+    # through ToolRegistry (schema checked again). Arguments come from the
+    # stored snapshot, never from free text interpreted as a URL or shell.
+    # Default true. Set false to continue the run with an ack and skip the tool
+    # (predictable mock demos). Ignored when hitl_resume_continue is false:
+    # the legacy stub does not execute the tool. Reject never executes.
+    hitl_execute_on_approve: bool = True
 
     # Session / conversation compaction (stub). Summarize older turns; keep a
     # recent raw window. Default summarizer is extractive (no live LLM).
