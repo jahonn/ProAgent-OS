@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from proagent_os.db import get_db, new_id, utcnow
 from proagent_os.eval import (
     EvalResult,
     GoldenTask,
@@ -14,6 +15,7 @@ from proagent_os.eval import (
     run_golden_task,
 )
 from proagent_os.eval.golden import _attach_judge, maybe_record_eval_metering
+from proagent_os.metering import usage_report
 from proagent_os.eval.judge import (
     JudgeParseError,
     JudgeVerdict,
@@ -101,12 +103,92 @@ def test_golden_task_from_mapping_requires_id():
         GoldenTask.from_mapping({"task": "x", "expected_tools": []})
 
 
-def test_maybe_record_eval_metering_is_stub():
-    meta = maybe_record_eval_metering("ten_x", task_id="t", passed=True)
-    assert meta is not None
-    assert meta["recorded"] is False
-    assert meta["billing"] == "stub"
+def _insert_tenant(name: str) -> tuple[str, str]:
+    tid = new_id("ten")
+    api_key = new_id("pk")
+    get_db().insert(
+        "tenants",
+        {
+            "id": tid,
+            "name": name,
+            "api_key": api_key,
+            "goals": "",
+            "constraints": "",
+            "tone": "professional",
+            "created_at": utcnow(),
+            "key_status": "active",
+        },
+    )
+    return tid, api_key
+
+
+def _eval_run_rows(tenant_id: str) -> list[dict]:
+    return get_db().fetchall(
+        """
+        SELECT kind, quantity FROM usage_events
+        WHERE tenant_id=? AND kind='eval_run'
+        ORDER BY rowid
+        """,
+        (tenant_id,),
+    )
+
+
+def _eval_total(report: dict) -> dict | None:
+    for row in report["totals"]:
+        if row["kind"] == "eval_run":
+            return row
+    return None
+
+
+def test_maybe_record_eval_metering_writes_case_count():
+    """Quantity is the number of cases in the finished call, scoped by tenant."""
     assert maybe_record_eval_metering(None, task_id="t", passed=True) is None
+    assert maybe_record_eval_metering("", task_id="t", passed=False) is None
+
+    owner, _owner_key = _insert_tenant("Eval Meter")
+    other, _other_key = _insert_tenant("Eval Other")
+    with pytest.raises(ValueError, match="cases"):
+        maybe_record_eval_metering(owner, task_id="t", passed=True, cases=0)
+
+    one = maybe_record_eval_metering(owner, task_id="case-a", passed=True, cases=1)
+    assert one is not None
+    assert one["recorded"] is True
+    assert one["kind"] == "eval_run"
+    assert one["quantity"] == 1
+    assert one["billing"] == "stub"
+    assert one["tenant_id"] == owner
+    assert one["task_id"] == "case-a"
+    assert one["passed"] is True
+    assert one["event_id"]
+
+    # One finish covering three cases stores 3, not a flat 1 for the batch.
+    batch = maybe_record_eval_metering(owner, task_id="suite", passed=False, cases=3)
+    assert batch is not None
+    assert batch["quantity"] == 3
+    assert batch["passed"] is False
+
+    other_row = maybe_record_eval_metering(other, task_id="case-b", passed=True)
+    assert other_row is not None
+    assert other_row["quantity"] == 1
+
+    assert _eval_run_rows(owner) == [
+        {"kind": "eval_run", "quantity": 1},
+        {"kind": "eval_run", "quantity": 3},
+    ]
+    assert _eval_run_rows(other) == [{"kind": "eval_run", "quantity": 1}]
+
+    owner_report = usage_report(owner)
+    assert owner_report["tenant_id"] == owner
+    assert owner_report["billing"] == "stub"
+    assert _eval_total(owner_report) == {"kind": "eval_run", "events": 2, "quantity": 4}
+    assert _eval_total(usage_report(other)) == {"kind": "eval_run", "events": 1, "quantity": 1}
+
+    everyone = usage_report(None)
+    quantities = {
+        (row["tenant_id"], row["kind"]): row["quantity"] for row in everyone["totals"]
+    }
+    assert quantities[(owner, "eval_run")] == 4
+    assert quantities[(other, "eval_run")] == 1
 
 
 def test_eval_result_to_dict():
@@ -140,7 +222,10 @@ async def test_run_golden_fixtures_with_mock_orchestrator(fixture_id: str):
     assert result.summary.get("orchestrator_status") == "completed"
     assert result.summary.get("eval") == "stub"
     assert result.metering is not None
-    assert result.metering["recorded"] is False
+    assert result.metering["recorded"] is True
+    assert result.metering["kind"] == "eval_run"
+    assert result.metering["quantity"] == 1
+    assert result.metering["billing"] == "stub"
     report = result.to_dict()
     assert report["judge_mode"] == "ordered_subset"
     assert report["passed"] is True
@@ -347,3 +432,78 @@ async def test_judge_fallback_keeps_trajectory_failure():
     assert judged.passed is False
     assert judged.judge_mode == "ordered_subset_fallback"
     assert "RuntimeError" in judged.judge_fallback
+
+
+@pytest.mark.asyncio
+async def test_run_golden_task_records_eval_run_on_usage_api():
+    """The CI helper writes eval_run; GET /api/v1/usage sums cases per tenant."""
+    from fastapi.testclient import TestClient
+
+    from proagent_os.main import create_app
+
+    owner, owner_key = _insert_tenant("Golden Owner")
+    other, other_key = _insert_tenant("Golden Other")
+    golden = next(t for t in load_golden_tasks(FIXTURES) if t.id == "research_kb_clock")
+
+    skipped = await run_golden_task(golden, tenant_id=owner, record_metering=False)
+    assert skipped.passed
+    assert skipped.metering is None
+    assert _eval_run_rows(owner) == []
+
+    result = await run_golden_task(golden, tenant_id=owner)
+    assert result.passed
+    assert result.metering is not None
+    assert result.metering["recorded"] is True
+    assert result.metering["kind"] == "eval_run"
+    assert result.metering["quantity"] == 1
+    assert result.metering["tenant_id"] == owner
+    assert result.metering["task_id"] == "research_kb_clock"
+    assert result.metering["billing"] == "stub"
+    assert _eval_run_rows(owner) == [{"kind": "eval_run", "quantity": 1}]
+    assert _eval_total(usage_report(owner)) == {
+        "kind": "eval_run",
+        "events": 1,
+        "quantity": 1,
+    }
+    assert _eval_total(usage_report(other)) is None
+
+    again = await run_golden_task(golden, tenant_id=owner)
+    assert again.metering["quantity"] == 1
+    assert _eval_total(usage_report(owner)) == {
+        "kind": "eval_run",
+        "events": 2,
+        "quantity": 2,
+    }
+    assert _eval_run_rows(other) == []
+
+    with TestClient(create_app()) as client:
+        own = client.get("/api/v1/usage", headers={"Authorization": f"Bearer {owner_key}"})
+        assert own.status_code == 200, own.text
+        body = own.json()
+        assert body["billing"] == "stub"
+        assert body["payment"] is None
+        assert body["tenant_id"] == owner
+        assert {"kind": "eval_run", "events": 2, "quantity": 2} in body["totals"]
+
+        other_body = client.get(
+            "/api/v1/usage", headers={"Authorization": f"Bearer {other_key}"}
+        )
+        assert other_body.status_code == 200, other_body.text
+        assert other_body.json()["tenant_id"] == other
+        assert all(row["kind"] != "eval_run" for row in other_body.json()["totals"])
+
+        forbidden = client.get(
+            "/api/v1/usage",
+            headers={"Authorization": f"Bearer {other_key}"},
+            params={"tenant_id": owner},
+        )
+        assert forbidden.status_code == 403
+
+        admin = client.get(
+            "/api/v1/usage",
+            headers={"Authorization": "Bearer test-admin-key"},
+            params={"tenant_id": owner},
+        )
+        assert admin.status_code == 200, admin.text
+        assert admin.json()["tenant_id"] == owner
+        assert {"kind": "eval_run", "events": 2, "quantity": 2} in admin.json()["totals"]

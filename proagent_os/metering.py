@@ -15,7 +15,9 @@ from proagent_os.db import get_db, new_id, utcnow
 
 # Stable kinds. Append a new name here and in the docs together; do not
 # rename one that has already been written to usage_events.
-USAGE_KINDS = ("llm_tokens", "kb_search", "recommendation_execute")
+# eval_run: one row when a golden-eval call finishes. quantity is the number
+# of cases in that call (run_golden_task passes 1). See docs/EVAL.md.
+USAGE_KINDS = ("llm_tokens", "kb_search", "recommendation_execute", "eval_run")
 
 BILLING_STUB = "stub"
 BILLING_DETAIL = (
