@@ -51,7 +51,7 @@ include `eval_run`, so nothing is inserted into `usage_events`. The hook returns
 | Mock Orchestrator pytest path | Live LangSmith datasets / complex-agent eval |
 | Structured `EvalResult` diffs | LLM-as-judge final-answer rubrics |
 | Metering hook (no DB write) | `eval_run` usage kind + dashboards |
-| Docs linking LangSmith + ADK | Session compaction of long eval traces |
+| Docs linking LangSmith + ADK | LLM-as-judge + live LangSmith datasets |
 
 ## Industry references
 

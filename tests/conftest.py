@@ -44,6 +44,11 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_OTEL_EXPORTER", "none")
     monkeypatch.setenv("PROAGENT_OTEL_EXPORTER_OTLP_ENDPOINT", "")
     monkeypatch.setenv("PROAGENT_OTEL_SERVICE_NAME", "proagent-os")
+    monkeypatch.setenv("PROAGENT_COMPACTION_ENABLED", "true")
+    monkeypatch.setenv("PROAGENT_COMPACTION_MAX_MESSAGES", "40")
+    monkeypatch.setenv("PROAGENT_COMPACTION_MAX_CHARS", "24000")
+    monkeypatch.setenv("PROAGENT_COMPACTION_KEEP_RECENT", "12")
+    monkeypatch.setenv("PROAGENT_COMPACTION_SUMMARY_MAX_CHARS", "2000")
     monkeypatch.setenv("PROAGENT_AGENTS_CONFIG", str(Path("config/agents.yaml").resolve()))
     monkeypatch.setenv(
         "PROAGENT_SKILLS_DIRS",

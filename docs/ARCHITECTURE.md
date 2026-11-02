@@ -99,20 +99,48 @@ Trace phase `hitl` (`LoopPhase.HITL`). Proactive `emit_recommendation` is unchan
 | ReAct (reason + act interleaved) | Yao et al., 2022 | https://arxiv.org/abs/2210.03629 |
 | Toolformer (self-supervised tool APIs) | Schick et al., 2023 | https://arxiv.org/abs/2302.04761 |
 | Plan-and-Solve prompting | Wang et al., 2023 | https://arxiv.org/abs/2305.04091 |
+| Session / context compaction | OpenAI sessions + Anthropic long-context practice | See MEMORY.md |
 
 ProAgent’s planner → specialists → aggregator is closest to **plan-and-execute**;
 each specialist’s tool rounds are a **ReAct-style** inner loop. We do not vendor
 LangGraph/CrewAI; we keep a small FastAPI + SQLite product shell.
 
+
+## Session / context compaction (stub)
+
+Long chats are compacted before planner/specialist prompts so the model window
+stays bounded — aligned with OpenAI session/conversation management and
+Anthropic’s “keep recent tool results, compress older history” practice.
+
+```mermaid
+flowchart LR
+  hist[Conversation messages] --> thresh{Over max messages or chars?}
+  thresh -->|no| raw[Use raw window]
+  thresh -->|yes| fold[Fold older into summary]
+  fold --> keep[Keep system + last N raw]
+  keep --> llm[Planner / specialist context]
+```
+
+| Piece | Now (stub) | Planned |
+| --- | --- | --- |
+| Trigger | `PROAGENT_COMPACTION_MAX_MESSAGES` / `MAX_CHARS` | Per-tenant token budgets |
+| Strategy | Keep system + last N; extractive summary of older | LLM summarizer; structured memory objects |
+| Tokens | `approx_chars` | Optional tiktoken / provider usage |
+| Audit | `summary` message meta + `tenant_memory` kind=`compaction`; trace phase `compaction` | Compaction event table / dashboards |
+| Wire-up | `ConversationMemory.compact_if_needed` + prior-context block in orchestrator | Full session object shared across runner turns |
+
+Details and env knobs: [MEMORY.md](MEMORY.md).
+
 ## Stub vs planned
 
 | Shipped now | Planned (not in this cut) |
 | --- | --- |
-| Typed `LoopPhase` + `event()` trace hooks | Session/thread compaction for long chats |
+| Typed `LoopPhase` + `event()` trace hooks | Richer phase dashboards / live traces |
 | `tool_trajectory` / `summarize_run` helpers | Exact-match / ADK numeric trajectory scores |
 | Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
 | Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
 | Task-run HITL pause/resume stub (`awaiting_human`) | Mid-run continue after approve; dedicated task audit |
+| Session / conversation compaction stub (`summary` + keep last N) | LLM summarizer, tiktoken budgets, per-tenant limits |
 | Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)
@@ -125,5 +153,6 @@ for fixture layout and matching rules.
 - `proagent_os/eval/` — golden-task loader + trajectory compare stub
 - `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format
 - `proagent_os/harness/hitl.py` — task-run pause / resume / reject stub
+- `proagent_os/harness/memory.py` / `compaction.py` — conversation store + session compaction stub
 - `proagent_os/proactive/` — monitors, recommendations, executors
-- `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/VERTICAL_SKILL.md`
+- `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/MEMORY.md`, `docs/VERTICAL_SKILL.md`

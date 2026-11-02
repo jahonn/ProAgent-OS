@@ -31,6 +31,7 @@ class LoopPhase(str, Enum):
     TOOL = "tool"
     AGGREGATE = "aggregate"
     HITL = "hitl"
+    COMPACTION = "compaction"
 
 
 # Documented outer-loop order (specialist may emit many TOOL rows between).
