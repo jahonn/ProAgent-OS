@@ -39,8 +39,9 @@ it. The orchestrator stores a snapshot and pauses the task at `awaiting_human`:
 1. Parses that snapshot. Opaque JSON, URLs, and shell-like names are not calls.
 2. Requires the checkpoint `tool_name` and `gated_arguments` to match.
 3. Refuses tools that are missing, not allowed for the specialist, or not marked `requires_human_approval` (so a pending payload cannot select `http_fetch`).
-4. Calls `ToolRegistry.invoke` **once** when `PROAGENT_HITL_EXECUTE_ON_APPROVE` is true (default). Schema is checked again; a failure does not `run`.
-5. Appends the observation and finishes remaining plan steps.
+4. Calls `ToolRegistry.invoke` **once** when `PROAGENT_HITL_EXECUTE_ON_APPROVE` is true (default). Schema is checked again before the call; a failure does not `run` and does not write a receipt.
+5. Before `invoke`, inserts an `hitl_execute_receipts` row (`started`) keyed by a fingerprint of task id, tool name, and args hash. After `invoke`, that row becomes `succeeded` or `failed` and stores an observation snippet. A later resume reuses a finished receipt and does not call `invoke` again. A `started` row (crash mid-flight) is fail-closed: HTTP 409, task stays `awaiting_human`, no automatic re-run. `{"reexecute": true}` is the explicit re-approve for that in-flight row only and may duplicate the side effect. A `succeeded` row is never run again. See [ARCHITECTURE.md](ARCHITECTURE.md).
+6. Appends the observation and finishes remaining plan steps.
 
 `POST .../reject` cancels the task and does not call `invoke`.
 `PROAGENT_HITL_RESUME_CONTINUE=false` is the legacy stub: approve marks
@@ -57,7 +58,7 @@ tool that sets `requires_human_approval` uses the same pause → approve → one
 | Env | Default | Meaning |
 | --- | --- | --- |
 | `PROAGENT_TOOL_SCHEMA_STRICT` | `true` | Validate before execute. Set `false` only for deliberate legacy / fixture looseness |
-| `PROAGENT_HITL_EXECUTE_ON_APPROVE` | `true` | On resume, run the paused gated tool once after a second schema check. `false` continues without `run`. See [ARCHITECTURE.md](ARCHITECTURE.md) |
+| `PROAGENT_HITL_EXECUTE_ON_APPROVE` | `true` | On resume, run the paused gated tool once after a second schema check, with an execute receipt so a retry does not run it again. `false` continues without `run`. The receipt guard is always on when this is true; there is no separate switch. See [ARCHITECTURE.md](ARCHITECTURE.md) |
 
 ## Stub vs planned
 
@@ -67,7 +68,7 @@ tool that sets `requires_human_approval` uses the same pause → approve → one
 | Global strict flag | Per-tool timeout, approval policy, and rate limits |
 | OpenAI function wire format as today | OpenAI **strict** structured-outputs mode (`strict: true` on function tools) end-to-end |
 | Observation on failure | Richer repair prompts / automatic re-ask with schema hints |
-| One gated `invoke` after approve | Crash-safe exactly-once if the process dies after `run` and before `completed`; approval that covers later calls in the same run |
+| One gated `invoke` per fingerprint, with a durable execute receipt | Approval that covers later calls in the same run; multi-process fencing beyond the SQLite unique fingerprint |
 | Builtins keep hand-written `parameters` dicts | Codegen from typed tool definitions |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline. Validation never calls a network.

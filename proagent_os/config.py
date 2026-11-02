@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Default true. Set false to continue the run with an ack and skip the tool
     # (predictable mock demos). Ignored when hitl_resume_continue is false:
     # the legacy stub does not execute the tool. Reject never executes.
+    # When true, execute-on-approve always writes hitl_execute_receipts
+    # (migration 0007) before invoke and will not run a succeeded or in-flight
+    # receipt again. There is no separate env switch for that guard.
+    # See docs/ARCHITECTURE.md.
     hitl_execute_on_approve: bool = True
 
     # Session / conversation compaction (stub). Summarize older turns; keep a

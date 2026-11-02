@@ -43,6 +43,7 @@ def test_fresh_database_applies_baseline_and_additive_indexes():
         (4, "0004_tenant_role_overrides", "applied"),
         (5, "0005_task_hitl_pause", "applied"),
         (6, "0006_hitl_checkpoint", "applied"),
+        (7, "0007_hitl_execute_receipts", "applied"),
     ]
     names = _names(db)
     for required in (
@@ -58,6 +59,9 @@ def test_fresh_database_applies_baseline_and_additive_indexes():
         "usage_events",
         "idx_usage_events_tenant_kind",
         "tenant_role_overrides",
+        "hitl_execute_receipts",
+        "idx_hitl_execute_receipts_fingerprint",
+        "idx_hitl_execute_receipts_task",
     ):
         assert required in names
     assert "kb_vec_index" not in names
@@ -137,6 +141,7 @@ def test_already_initialized_database_is_stamped_then_additive(monkeypatch):
         (4, "0004_tenant_role_overrides", "applied"),
         (5, "0005_task_hitl_pause", "applied"),
         (6, "0006_hitl_checkpoint", "applied"),
+        (7, "0007_hitl_execute_receipts", "applied"),
     ]
     row = db.fetchone("SELECT api_key, note, key_status FROM tenants WHERE id=?", ("ten_keep",))
     assert row["api_key"] == "pk_keep_secret_value"
@@ -197,6 +202,7 @@ def test_partial_legacy_database_runs_baseline_instead_of_stamp(monkeypatch):
         (4, "applied"),
         (5, "applied"),
         (6, "applied"),
+        (7, "applied"),
     ]
     row = db.fetchone("SELECT key_status, api_key FROM tenants WHERE id=?", ("ten_legacy",))
     assert row["key_status"] == "active"
@@ -207,7 +213,7 @@ def test_partial_legacy_database_runs_baseline_instead_of_stamp(monkeypatch):
 
 def test_repeat_startup_applies_nothing():
     before = _migration_rows(get_db())
-    assert [row["version"] for row in before] == [1, 2, 3, 4, 5, 6]
+    assert [row["version"] for row in before] == [1, 2, 3, 4, 5, 6, 7]
     db = reset_db(get_db().path)
     assert db.migration_changes == []
     assert _migration_rows(db) == before
@@ -308,6 +314,7 @@ def test_version_2_database_applies_later_migrations():
         (4, "0004_tenant_role_overrides", "applied"),
         (5, "0005_task_hitl_pause", "applied"),
         (6, "0006_hitl_checkpoint", "applied"),
+        (7, "0007_hitl_execute_receipts", "applied"),
     ]
     assert "usage_events" in _names(db)
     assert "idx_usage_events_tenant_kind" in _names(db)
@@ -327,4 +334,5 @@ def test_migrate_cli_prints_recorded_versions(capsys: pytest.CaptureFixture[str]
     assert "0004_tenant_role_overrides" in out
     assert "0005_task_hitl_pause" in out
     assert "0006_hitl_checkpoint" in out
+    assert "0007_hitl_execute_receipts" in out
     assert str(get_db().path) in out

@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from proagent_os.auth import TenantDep, enforce
 from proagent_os.db import get_db, loads
+from proagent_os.harness.hitl import HitlExecuteBlocked
 from proagent_os.models.schemas import TaskCreate, TaskHitlNote, TaskPause
 from proagent_os.rbac import Permission
 from proagent_os.services import get_services
@@ -94,9 +95,12 @@ async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None
     then finish remaining plan steps (OpenAI / LangGraph shaped). If
     ``PROAGENT_HITL_EXECUTE_ON_APPROVE`` is also true (default) and the pause
     stored a gated-tool snapshot, that tool runs once through ToolRegistry
-    (schema checked again) before the specialist continues. Without a
-    checkpoint, or when the continue flag is false, marks ``completed``
-    (legacy stub) and does not run the tool.
+    (schema checked again) before the specialist continues. A durable execute
+    receipt is written before that invoke. A second resume reuses a stored
+    success or failure and does not invoke again. An in-flight (``started``)
+    receipt returns 409 unless ``reexecute`` is true. Without a checkpoint,
+    or when the continue flag is false, marks ``completed`` (legacy stub) and
+    does not run the tool.
     """
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
@@ -105,10 +109,17 @@ async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None
     if row["tenant_id"] != tenant["id"]:
         raise HTTPException(404, "task not found")
     note = (body.note if body else "") or ""
+    reexecute = bool(body.reexecute) if body else False
     try:
         return await get_services().orchestrator.resume_after_hitl(
-            tenant["id"], task_id, actor=tenant["id"], note=note
+            tenant["id"],
+            task_id,
+            actor=tenant["id"],
+            note=note,
+            reexecute=reexecute,
         )
+    except HitlExecuteBlocked as exc:
+        raise HTTPException(409, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     except KeyError:
