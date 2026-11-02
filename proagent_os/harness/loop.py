@@ -11,7 +11,7 @@ That matches industry "agent harness" practice:
   (https://www.langchain.com/blog/planning-agents)
 
 Trace rows already stored ``phase`` as a string. This module makes those values
-stable constants and offers a thin trajectory view for future eval stubs
+stable constants and offers a thin trajectory view consumed by `proagent_os.eval`
 (LangSmith / ADK-style tool-path checks) without changing the mock LLM path.
 
 See docs/ARCHITECTURE.md. Trajectory helpers are a **stub**, not an LLM judge.
@@ -72,7 +72,7 @@ def tool_trajectory(trace: Sequence[Mapping[str, Any]]) -> List[str]:
     """Ordered tool names from a task trace (trajectory-eval stub input).
 
     This is the same idea as LangSmith / Google ADK tool-trajectory checks:
-    compare the actual tool path to an expected list. No scoring lives here yet.
+    compare the actual tool path to an expected list. Scoring lives in proagent_os.eval (ordered_subset stub).
     """
     names: List[str] = []
     for row in iter_phase(trace, LoopPhase.TOOL):
@@ -111,7 +111,7 @@ def summarize_run(trace: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "eval": "stub",
         "detail": (
             "Trajectory summary only. Not an LLM-as-judge score. "
-            "Wire golden tasks later against tool_trajectory / phases."
+            "Golden fixtures compare against tool_trajectory; see docs/EVAL.md."
         ),
     }
 

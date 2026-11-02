@@ -31,7 +31,7 @@ flowchart LR
 
 Constants: `LoopPhase` in `proagent_os/harness/loop.py`. Orchestrator writes
 trace rows through `event(...)`. Helpers `tool_trajectory` / `summarize_run`
-expose a **trajectory stub** for future golden-task evals (not an LLM judge).
+feed the golden-task eval stub in `proagent_os/eval/` (ordered-subset; not an LLM judge).
 
 ## Inner loop (specialist tool rounds)
 
@@ -86,16 +86,19 @@ LangGraph/CrewAI; we keep a small FastAPI + SQLite product shell.
 | Shipped now | Planned (not in this cut) |
 | --- | --- |
 | Typed `LoopPhase` + `event()` trace hooks | Session/thread compaction for long chats |
-| `tool_trajectory` / `summarize_run` stub | Golden-task runner + CI trajectory asserts |
+| `tool_trajectory` / `summarize_run` helpers | Exact-match / ADK numeric trajectory scores |
+| Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
 | Docs mapping to platform patterns | Guardrail interrupts that pause mid-specialist |
 | Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |
 
-Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green.
+Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)
+for fixture layout and matching rules.
 
 ## Related code
 
 - `proagent_os/harness/orchestrator.py` — outer + inner loops
 - `proagent_os/harness/loop.py` — phases and trajectory helpers
+- `proagent_os/eval/` — golden-task loader + trajectory compare stub
 - `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format
 - `proagent_os/proactive/` — monitors, recommendations, executors
-- `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/VERTICAL_SKILL.md`
+- `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/VERTICAL_SKILL.md`
