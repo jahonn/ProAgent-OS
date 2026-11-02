@@ -41,7 +41,7 @@ curl -s -X PUT http://localhost:8080/api/v1/tenants/ten_xxx/role \
 | `POST /api/v1/tenants/me/api-key/revoke` | `apikey.revoke_self` | 403 |
 | `GET /api/v1/recommendations` | `recommendation.read` | allowed |
 | `POST .../approve`, `.../reject`, `.../decide` | `recommendation.decide` | 403, and the row stays `pending` |
-| `POST /api/v1/tasks/{id}/pause` / `resume` / `reject` | `recommendation.decide` (reused for the task-run HITL stub) | 403; task status unchanged |
+| `POST /api/v1/tasks/{id}/pause` / `resume` / `reject` | `recommendation.decide` (reused for task-run HITL, including recover of a stuck `running` task and reject of `running` when an open checkpoint is stored) | 403; task status unchanged |
 | `GET /api/v1/usage` | `usage.read` | allowed for that tenant only |
 
 Approve, reject, and execute share `recommendation.decide`. An admin key on those routes is still HTTP 400 `Use a tenant API key`, which is the previous behavior. Usage for another tenant is still HTTP 403.

@@ -107,10 +107,13 @@ class TaskPause(BaseModel):
 class TaskHitlNote(BaseModel):
     """Optional note on resume / reject.
 
-    ``reexecute`` applies only to resume. It is the explicit re-approve for a
-    gated-tool execute receipt left in ``started`` (crash mid-flight). Default
-    false: that resume fails closed and does not run the side effect again.
-    A ``succeeded`` receipt is never run again, even when this is true.
+    ``reexecute`` applies only to resume, and only while the task is still
+    ``awaiting_human``. It is the explicit re-approve for a gated-tool execute
+    receipt left in ``started`` (crash mid-flight). Default false: that resume
+    fails closed and does not run the side effect again. A ``succeeded`` or
+    ``failed`` receipt is never run again, even when this is true. A task
+    already ``running`` ignores this field: a finished receipt is recovered
+    without another invoke, and a ``started`` receipt stays fail-closed.
     Reject ignores the field and still does not execute.
     """
 

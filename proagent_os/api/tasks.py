@@ -98,9 +98,13 @@ async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None
     (schema checked again) before the specialist continues. A durable execute
     receipt is written before that invoke. A second resume reuses a stored
     success or failure and does not invoke again. An in-flight (``started``)
-    receipt returns 409 unless ``reexecute`` is true. Without a checkpoint,
-    or when the continue flag is false, marks ``completed`` (legacy stub) and
-    does not run the tool.
+    receipt returns 409 unless ``reexecute`` is true and the task is still
+    ``awaiting_human``. If the task is already ``running`` and that receipt
+    is ``succeeded`` or ``failed``, this same route re-injects the stored
+    observation and finishes the open checkpoint. It does not invoke. A
+    ``running`` task with a ``started`` receipt returns 409 even when
+    ``reexecute`` is true. Without a checkpoint, or when the continue flag
+    is false, marks ``completed`` (legacy stub) and does not run the tool.
     """
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
@@ -130,7 +134,10 @@ async def resume_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None
 def reject_task(task_id: str, tenant: TenantDep, body: TaskHitlNote | None = None) -> dict:
     """Reject a paused run: awaiting_human → cancelled.
 
-    Never continues the specialist loop and never executes a gated tool.
+    Also cancels a ``running`` task that still has an open HITL checkpoint
+    (force-cancel after a crash, or a ``started`` receipt while ``running``).
+    A ``running`` task with no checkpoint is refused. Never continues the
+    specialist loop and never executes a gated tool.
     """
     if tenant.get("is_admin"):
         raise HTTPException(400, "Use a tenant API key")
