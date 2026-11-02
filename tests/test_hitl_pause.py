@@ -13,7 +13,11 @@ from proagent_os.harness.hitl import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_RUNNING,
+    HitlExecuteBlocked,
+    TaskHitlService,
     build_gated_pending_action,
+    execute_fingerprint,
+    observation_snippet,
     parse_gated_tool_call,
     sanitize_pending_action,
 )
@@ -679,6 +683,16 @@ async def test_approve_executes_gated_tool_once_then_completes(monkeypatch):
     executed = [e for e in resumed["trace"] if e.get("hitl_executed") is True]
     assert len(executed) == 1
     assert executed[0]["name"] == "gated_ledger"
+    assert executed[0].get("hitl_receipt") == "recorded"
+    receipts = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "succeeded"
+    assert receipts[0]["tool_name"] == "gated_ledger"
+    assert receipts[0]["tool_call_id"] == "tc_ledger"
+    assert "entry" not in receipts[0]
+    observed = loads(receipts[0]["observation_json"], {})
+    assert observed["ok"] is True
+    assert observed["output"]["recorded"] is True
 
 
 @pytest.mark.asyncio
@@ -697,6 +711,7 @@ async def test_reject_never_executes_gated_tool(monkeypatch):
     assert rejected["hitl_decision"] == "rejected"
     assert ledger.runs == []
     assert not any(e.get("hitl_executed") for e in rejected["trace"])
+    assert TaskHitlService().list_execute_receipts(tid, paused["task_id"]) == []
 
 
 @pytest.mark.asyncio
@@ -927,3 +942,170 @@ async def test_resume_schema_failure_does_not_run_tool(monkeypatch):
         e for e in resumed["trace"] if e.get("phase") == "hitl" and e.get("action") == "continue"
     ]
     assert continue_events[-1].get("skip_reason") == "schema_validation_failed"
+    assert TaskHitlService().list_execute_receipts(tid, paused["task_id"]) == []
+
+
+def test_execute_fingerprint_ignores_key_order():
+    left = execute_fingerprint("task_1", "gated_ledger", {"amount": 5, "entry": "deposit"})
+    right = execute_fingerprint("task_1", "gated_ledger", {"entry": "deposit", "amount": 5})
+    assert left == right
+    changed = execute_fingerprint("task_1", "gated_ledger", {"entry": "deposit", "amount": 6})
+    assert left != changed
+    assert left[0] != left[1]
+
+
+def test_observation_snippet_clips_to_json():
+    raw = observation_snippet({"ok": True, "output": {"blob": "x" * 20_000}, "error": None})
+    parsed = loads(raw, None)
+    assert isinstance(parsed, dict)
+    assert parsed.get("observation_truncated") is True
+    assert len(raw) <= 8_000
+
+
+@pytest.mark.asyncio
+async def test_second_resume_after_crash_reuses_receipt(monkeypatch):
+    """Tool succeeds and the receipt is stored; the process dies before completed.
+
+    A second resume must not invoke the side effect again.
+    """
+    tid = _tenant("pk_hitl_crash_ok")
+    svc = get_services()
+    ledger = _install_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+    assert paused["status"] == STATUS_AWAITING_HUMAN
+    assert ledger.runs == []
+
+    real_resume = TaskHitlService.resume_task
+
+    def crash_after_success(self, tenant_id, task_id, *, actor="", note="", reopen=False):
+        if reopen:
+            raise RuntimeError("synthetic crash after gated tool success")
+        return real_resume(self, tenant_id, task_id, actor=actor, note=note, reopen=reopen)
+
+    monkeypatch.setattr(TaskHitlService, "resume_task", crash_after_success)
+    with pytest.raises(RuntimeError, match="synthetic crash after gated tool success"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops", note="post it")
+
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    crashed = svc.hitl.get_task(tid, paused["task_id"])
+    assert crashed["status"] == STATUS_AWAITING_HUMAN
+    assert crashed["hitl_decision"] == ""
+    receipts = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "succeeded"
+    assert loads(receipts[0]["observation_json"], {}).get("ok") is True
+
+    monkeypatch.setattr(TaskHitlService, "resume_task", real_resume)
+    resumed = await svc.orchestrator.resume_after_hitl(
+        tid, paused["task_id"], actor="ops", note="post it", reexecute=True
+    )
+    assert resumed["status"] == STATUS_COMPLETED
+    assert resumed.get("gated_tool_executed") is True
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert "SECOND_STEP_OK" in (resumed.get("result") or "")
+    reused = [
+        e
+        for e in resumed["trace"]
+        if e.get("phase") == "tool" and e.get("hitl_receipt") == "reused"
+    ]
+    assert len(reused) == 1
+    assert reused[0]["name"] == "gated_ledger"
+    assert not any(e.get("hitl_receipt") == "recorded" for e in resumed["trace"])
+    again = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(again) == 1
+    assert again[0]["status"] == "succeeded"
+    assert again[0]["id"] == receipts[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_started_receipt_fail_closed_until_explicit_reexecute(monkeypatch):
+    """Crash after invoke and before the receipt is marked succeeded.
+
+    The next resume does not run the tool. reexecute=true is the explicit re-approve.
+    """
+    tid = _tenant("pk_hitl_crash_started")
+    svc = get_services()
+    ledger = _install_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+
+    def crash_before_finish(self, receipt_id, *, status, observation, error=""):
+        raise RuntimeError("synthetic crash before execute receipt succeeded")
+
+    original_finish = TaskHitlService.finish_execute_receipt
+    monkeypatch.setattr(TaskHitlService, "finish_execute_receipt", crash_before_finish)
+    with pytest.raises(RuntimeError, match="before execute receipt succeeded"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops")
+
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_AWAITING_HUMAN
+    receipts = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "started"
+    assert receipts[0]["observation_json"] == "{}"
+
+    monkeypatch.setattr(TaskHitlService, "finish_execute_receipt", original_finish)
+    with pytest.raises(HitlExecuteBlocked, match="reexecute"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops")
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_AWAITING_HUMAN
+
+    resumed = await svc.orchestrator.resume_after_hitl(
+        tid, paused["task_id"], actor="ops", note="explicit", reexecute=True
+    )
+    assert resumed["status"] == STATUS_COMPLETED
+    assert ledger.runs == [
+        {"entry": "deposit", "amount": 5},
+        {"entry": "deposit", "amount": 5},
+    ]
+    finished = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(finished) == 1
+    assert finished[0]["id"] == receipts[0]["id"]
+    assert finished[0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_api_started_receipt_returns_409_until_reexecute(monkeypatch):
+    tid = _tenant("pk_hitl_api_409")
+    svc = get_services()
+    ledger = _install_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+    args_hash, fingerprint = execute_fingerprint(
+        paused["task_id"], "gated_ledger", {"entry": "deposit", "amount": 5}
+    )
+    TaskHitlService().claim_execute_receipt(
+        tenant_id=tid,
+        task_id=paused["task_id"],
+        tool_call_id="tc_ledger",
+        tool_name="gated_ledger",
+        args_hash=args_hash,
+        fingerprint=fingerprint,
+    )
+    assert ledger.runs == []
+
+    app = create_app()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer pk_hitl_api_409"}
+    set_tenant_role(tid, Role.TENANT_OPERATOR.value)
+    blocked = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/resume",
+        headers=headers,
+        json={"note": "again"},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "reexecute" in blocked.json()["detail"]
+    assert ledger.runs == []
+    still = client.get(f"/api/v1/tasks/{paused['task_id']}", headers=headers)
+    assert still.status_code == 200
+    assert still.json()["status"] == STATUS_AWAITING_HUMAN
+
+    rejected = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/reject",
+        headers=headers,
+        json={"note": "stop", "reexecute": True},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == STATUS_CANCELLED
+    assert ledger.runs == []

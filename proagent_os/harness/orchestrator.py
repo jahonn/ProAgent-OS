@@ -10,6 +10,9 @@ from proagent_os.config import get_settings
 from proagent_os.db import dumps, get_db, new_id, utcnow
 from proagent_os.harness.hitl import (
     CHECKPOINT_VERSION,
+    RECEIPT_FAILED,
+    RECEIPT_SUCCEEDED,
+    HitlExecuteBlocked,
     RunPaused,
     TaskHitlService,
     build_gated_pending_action,
@@ -394,16 +397,24 @@ class Orchestrator:
         *,
         actor: str = "",
         note: str = "",
+        reexecute: bool = False,
     ) -> Dict[str, Any]:
         """Approve a paused task; continue mid-loop when checkpoint + flag allow.
 
         Aligns with OpenAI Agents ``state.approve`` + ``Runner.run(agent, state)``
         and LangGraph ``Command(resume=...)``. Reject stays on ``TaskHitlService``.
+
+        ``reexecute`` is the explicit re-approve for a ``started`` execute
+        receipt only. It does not run a ``succeeded`` receipt again.
         """
         token = bind_tenant(tenant_id)
         try:
             return await self._resume_after_hitl(
-                tenant_id, task_id, actor=actor, note=note
+                tenant_id,
+                task_id,
+                actor=actor,
+                note=note,
+                reexecute=reexecute,
             )
         finally:
             unbind_tenant(token)
@@ -415,6 +426,7 @@ class Orchestrator:
         *,
         actor: str = "",
         note: str = "",
+        reexecute: bool = False,
     ) -> Dict[str, Any]:
         hitl = TaskHitlService()
         row = hitl.get_task(tenant_id, task_id)
@@ -431,8 +443,35 @@ class Orchestrator:
             checkpoint
         )
         if not can_continue:
-            # Legacy stub: mark completed with decision recorded.
+            # Legacy stub: mark completed with decision recorded. Tool is not run.
             return hitl.resume_task(tenant_id, task_id, actor=actor, note=note, reopen=False)
+
+        # Run (or reuse) the gated tool while the task is still awaiting_human.
+        # The execute receipt commits before invoke and records the observation
+        # before this method re-opens the task. A crash in that window leaves
+        # a row a second resume can see, instead of invoking the side effect again.
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        pending = row.get("pending_action") or {}
+        if not isinstance(pending, dict):
+            pending = {}
+        trace = list(row.get("trace") or [])
+        decision_note = (note or "").strip() or "approved"
+        paused_idx = int(checkpoint.get("paused_step_index") or 0)
+        paused_agent = str(checkpoint.get("paused_agent") or "researcher")
+        ctx = ToolContext(tenant_id=tenant_id, task_id=task_id)
+        base_len = len(trace)
+        gated = await self._execute_approved_gated_tool(
+            pending=pending,
+            checkpoint=checkpoint,
+            ctx=ctx,
+            trace=trace,
+            agent_id=paused_agent,
+            execute_enabled=bool(settings.hitl_execute_on_approve),
+            decision_note=decision_note,
+            reexecute=reexecute,
+        )
+        spawned = list(trace[base_len:])
 
         # Re-open to running and continue remaining plan steps.
         row = hitl.resume_task(tenant_id, task_id, actor=actor, note=note, reopen=True)
@@ -444,28 +483,13 @@ class Orchestrator:
         step_results: List[Dict[str, Any]] = list(checkpoint.get("completed_steps") or [])
         if not isinstance(step_results, list):
             step_results = []
-        paused_idx = int(checkpoint.get("paused_step_index") or 0)
-        paused_agent = str(checkpoint.get("paused_agent") or "researcher")
         paused_goal = str(checkpoint.get("paused_goal") or input_text)
-        pending = row.get("pending_action") or {}
-        if not isinstance(pending, dict):
-            pending = {}
-        trace: List[Dict[str, Any]] = list(row.get("trace") or [])
+        trace = list(row.get("trace") or [])
+        trace.extend(spawned)
         brand = self.brand.get(tenant_id)
         brand_block = brand.prompt_block() if brand else f"Tenant: {tenant_id}"
         prior_block = self.memory.prior_context_block(conversation_id)
-        ctx = ToolContext(tenant_id=tenant_id, task_id=task_id)
 
-        decision_note = (note or "").strip() or "approved"
-        gated = await self._execute_approved_gated_tool(
-            pending=pending,
-            checkpoint=checkpoint if isinstance(checkpoint, dict) else {},
-            ctx=ctx,
-            trace=trace,
-            agent_id=paused_agent,
-            execute_enabled=bool(settings.hitl_execute_on_approve),
-            decision_note=decision_note,
-        )
         approval_blob = gated["observation"]
         resume_note = gated["note"]
         trace.append(
@@ -479,6 +503,7 @@ class Orchestrator:
                 tool=gated.get("tool_name") or checkpoint.get("tool_name") or "",
                 gated_tool_executed=bool(gated.get("executed")),
                 skip_reason=gated.get("skip_reason") or "",
+                hitl_receipt=gated.get("receipt") or "",
             )
         )
 
@@ -589,13 +614,19 @@ class Orchestrator:
         agent_id: str,
         execute_enabled: bool,
         decision_note: str,
+        reexecute: bool = False,
     ) -> Dict[str, Any]:
-        """Run the paused tool once, or explain why it was skipped.
+        """Run the paused tool once, reuse a stored receipt, or explain a skip.
 
         Only a ``kind=gated_tool`` snapshot is eligible. The tool must still
         declare ``requires_human_approval``, must match the checkpoint, and
-        must pass schema validation again inside ``ToolRegistry.invoke``.
-        ``proposed`` is never executed. Reject does not call this method.
+        must pass schema validation again before ``run``. When execution is
+        enabled, a receipt is claimed before ``ToolRegistry.invoke`` and the
+        observation is stored on that row before this method returns. A
+        ``succeeded`` or ``failed`` receipt is reused and not invoked again.
+        A ``started`` receipt raises ``HitlExecuteBlocked`` unless
+        ``reexecute`` is true. ``proposed`` is never executed. Reject does
+        not call this method.
         """
         parsed = parse_gated_tool_call(pending)
         if isinstance(pending.get("proposed"), dict):
@@ -626,6 +657,7 @@ class Orchestrator:
             executed_flag: bool = False,
             skip_reason: str = "",
             seed: bool = True,
+            receipt: str = "",
         ) -> Dict[str, Any]:
             seed_args = arguments if isinstance(arguments, dict) else None
             return {
@@ -636,6 +668,7 @@ class Orchestrator:
                 "arguments": seed_args if seed_args is not None else {},
                 "executed": executed_flag,
                 "skip_reason": skip_reason,
+                "receipt": receipt,
                 "seed_tool_name": tool_name if seed and tool_name else "",
                 "seed_tool_call_id": tool_call_id if seed and tool_call_id else "",
                 "seed_arguments": seed_args,
@@ -764,28 +797,174 @@ class Orchestrator:
                 error=f"tool not allowed: {tool_name}",
             )
 
+        # Schema before the claim so a bad snapshot does not take the exactly-once slot.
+        schema_check = self.tools.validate(tool_name, arguments)
+        if not schema_check.ok:
+            logger.info(
+                "hitl_execute_skip task_id=%s tool=%s reason=schema_validation_failed",
+                ctx.task_id or "",
+                tool_name,
+            )
+            trace.append(
+                event(
+                    LoopPhase.TOOL,
+                    agent=agent_id,
+                    id=tool_call_id,
+                    name=tool_name,
+                    args_summary=_args_summary(arguments),
+                    ok=False,
+                    error=schema_check.error,
+                    latency_ms=0,
+                    hitl_executed=False,
+                    schema_validation_failed=True,
+                    output_preview=None,
+                )
+            )
+            return _pack(
+                observation={
+                    "ok": False,
+                    "output": schema_check.output,
+                    "error": schema_check.error,
+                },
+                note=_note("The gated tool failed schema validation and was not executed."),
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                arguments=arguments,
+                executed_flag=False,
+                skip_reason="schema_validation_failed",
+            )
+
+        if not ctx.task_id:
+            raise HitlExecuteBlocked(
+                "Missing task id. Refusing to run the gated tool without an execute receipt."
+            )
+
+        hitl_receipts = TaskHitlService()
+        decision = hitl_receipts.resolve_execute_receipt(
+            tenant_id=ctx.tenant_id,
+            task_id=ctx.task_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            reexecute=reexecute,
+        )
+        receipt_row = decision["receipt"]
+        receipt_id = str(receipt_row.get("id") or "")
+
+        def _already_traced() -> bool:
+            return any(
+                ev.get("phase") == LoopPhase.TOOL.value
+                and ev.get("id") == tool_call_id
+                and ev.get("hitl_executed") is True
+                for ev in trace
+            )
+
+        if decision["action"] == "reuse":
+            observation = decision["observation"]
+            if not isinstance(observation, dict):
+                observation = {"ok": False, "output": None, "error": "missing observation"}
+            schema_failed = (
+                isinstance(observation.get("output"), dict)
+                and observation["output"].get("error") == "schema_validation_failed"
+            )
+            stored_ok = bool(observation.get("ok")) and not schema_failed
+            # A failed receipt means invoke already happened (unless schema failed).
+            if schema_failed:
+                ran = False
+                skip = "schema_validation_failed"
+                extra = "The gated tool failed schema validation and was not executed."
+            elif stored_ok:
+                ran = True
+                skip = ""
+                extra = (
+                    f"The gated tool `{tool_name}` already ran once. "
+                    "This resume reused the stored observation and did not invoke it again."
+                )
+            else:
+                ran = True
+                skip = "tool_error"
+                extra = (
+                    f"The gated tool `{tool_name}` was already invoked and returned an error. "
+                    "This resume reused the stored observation and did not invoke it again."
+                )
+            if not _already_traced():
+                trace.append(
+                    event(
+                        LoopPhase.TOOL,
+                        agent=agent_id,
+                        id=tool_call_id,
+                        name=tool_name,
+                        args_summary=_args_summary(arguments),
+                        ok=bool(observation.get("ok")),
+                        error=observation.get("error"),
+                        latency_ms=0,
+                        hitl_executed=ran,
+                        hitl_receipt="reused",
+                        hitl_receipt_id=receipt_id,
+                        schema_validation_failed=schema_failed,
+                        output_preview=(
+                            _args_summary({"output": observation.get("output")}, limit=400)
+                            if observation.get("ok")
+                            else None
+                        ),
+                    )
+                )
+            logger.info(
+                "hitl_execute_reuse task_id=%s tool=%s receipt_id=%s status=%s",
+                ctx.task_id,
+                tool_name,
+                receipt_id,
+                receipt_row.get("status"),
+            )
+            return _pack(
+                observation=observation,
+                note=_note(extra),
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                arguments=arguments,
+                executed_flag=ran,
+                skip_reason=skip,
+                receipt="reused",
+            )
+
         t0 = time.perf_counter()
         result = await self.tools.invoke(tool_name, arguments, ctx)
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         schema_failed = (
             isinstance(result.output, dict) and result.output.get("error") == "schema_validation_failed"
         )
-        ran = not schema_failed
-        trace.append(
-            event(
-                LoopPhase.TOOL,
-                agent=agent_id,
-                id=tool_call_id,
-                name=tool_name,
-                args_summary=_args_summary(arguments),
-                ok=result.ok,
-                error=result.error,
-                latency_ms=latency_ms,
-                hitl_executed=ran,
-                schema_validation_failed=schema_failed,
-                output_preview=_args_summary({"output": result.output}, limit=400) if result.ok else None,
-            )
+        observation = {"ok": result.ok, "output": result.output, "error": result.error}
+        # Finish the receipt before returning. A crash after invoke and before
+        # this update leaves status=started, which a later resume will not re-run.
+        if schema_failed or not result.ok:
+            finish_status = RECEIPT_FAILED
+        else:
+            finish_status = RECEIPT_SUCCEEDED
+        hitl_receipts.finish_execute_receipt(
+            receipt_id,
+            status=finish_status,
+            observation=observation,
+            error=result.error or "",
         )
+        ran = not schema_failed
+        if not _already_traced():
+            trace.append(
+                event(
+                    LoopPhase.TOOL,
+                    agent=agent_id,
+                    id=tool_call_id,
+                    name=tool_name,
+                    args_summary=_args_summary(arguments),
+                    ok=result.ok,
+                    error=result.error,
+                    latency_ms=latency_ms,
+                    hitl_executed=ran,
+                    hitl_receipt="recorded",
+                    hitl_receipt_id=receipt_id,
+                    schema_validation_failed=schema_failed,
+                    output_preview=_args_summary({"output": result.output}, limit=400) if result.ok else None,
+                )
+            )
         if schema_failed:
             extra = "The gated tool failed schema validation and was not executed."
             skip = "schema_validation_failed"
@@ -796,20 +975,22 @@ class Orchestrator:
             extra = f"The gated tool `{tool_name}` was invoked and returned an error."
             skip = "tool_error"
         logger.info(
-            "hitl_execute task_id=%s tool=%s ok=%s schema_failed=%s",
+            "hitl_execute task_id=%s tool=%s ok=%s schema_failed=%s receipt_id=%s",
             ctx.task_id or "",
             tool_name,
             result.ok,
             schema_failed,
+            receipt_id,
         )
         return _pack(
-            observation={"ok": result.ok, "output": result.output, "error": result.error},
+            observation=observation,
             note=_note(extra),
             tool_name=tool_name,
             tool_call_id=tool_call_id,
             arguments=arguments,
             executed_flag=ran,
             skip_reason=skip,
+            receipt="recorded",
         )
 
     async def _plan(

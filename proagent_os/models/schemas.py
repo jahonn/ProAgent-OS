@@ -105,7 +105,15 @@ class TaskPause(BaseModel):
 
 
 class TaskHitlNote(BaseModel):
-    """Optional note on resume / reject."""
+    """Optional note on resume / reject.
+
+    ``reexecute`` applies only to resume. It is the explicit re-approve for a
+    gated-tool execute receipt left in ``started`` (crash mid-flight). Default
+    false: that resume fails closed and does not run the side effect again.
+    A ``succeeded`` receipt is never run again, even when this is true.
+    Reject ignores the field and still does not execute.
+    """
 
     note: str = ""
+    reexecute: bool = False
 

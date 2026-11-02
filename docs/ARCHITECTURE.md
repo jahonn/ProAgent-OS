@@ -78,8 +78,12 @@ replacing the recommendation inbox.
 flowchart LR
   run[Task running] -->|requires_human_approval tool or POST pause| pause[awaiting_human]
   pause -->|POST resume + checkpoint| gate{Execute gated tool?}
-  gate -->|snapshot + both flags on| once[ToolRegistry.invoke once]
+  gate -->|snapshot + both flags on| receipt{Execute receipt?}
+  receipt -->|none| once[claim started, invoke once, store observation]
   once --> cont[inject observation + finish plan]
+  receipt -->|succeeded or failed| reuse[reuse stored observation]
+  reuse --> cont
+  receipt -->|started| block[409, stay awaiting_human]
   gate -->|no snapshot or execute flag off| cont
   cont --> done[completed + hitl_decision=approved]
   pause -->|continue flag off or no checkpoint| stub[completed stub, tool not run]
@@ -92,18 +96,49 @@ flowchart LR
 | Trigger | Tool with `requires_human_approval` (builtin `request_run_approval`, or any registered tool that sets the flag) or `POST /api/v1/tasks/{id}/pause` | Guardrail / policy interrupts mid-tool batch |
 | Payload | `pending_action_json`: gated pauses store `{kind: gated_tool, tool, tool_call_id, arguments, proposed}`. `arguments` is the validated snapshot re-invoked on approve. `proposed` is opaque human context (often the `action` object). Never interpreted as a URL or shell command. Manual pause payloads stay opaque objects with no tool execution. | Typed action schemas + dry-run previews |
 | Checkpoint | `hitl_checkpoint_json` (migration `0006`): plan, completed steps, pause locus, and `gated_arguments` copied from the snapshot | Full message-history / tool-call replay |
-| Decide API | `POST .../resume`, `POST .../reject` (RBAC reuses `recommendation.decide`) | Dedicated `task.decide` permission |
-| Orchestrator | On approve with checkpoint + `PROAGENT_HITL_RESUME_CONTINUE=true` (default): if `PROAGENT_HITL_EXECUTE_ON_APPROVE` is true (default) and the snapshot matches the checkpoint, `ToolRegistry.invoke` once (schema checked again; tool must still `requires_human_approval`), inject that observation, finish remaining plan steps, aggregate. Execute flag false: continue with an ack and do not run the tool. Continue flag false or no checkpoint: legacy mark-completed stub, tool not run. Reject never continues and never executes. | Approval that lasts across later calls; crash-safe exactly-once if the process dies after the tool runs |
+| Execute receipt | `hitl_execute_receipts` (migration `0007`): fingerprint of `(task_id, tool, args hash)`, `tool_call_id`, status `started` / `succeeded` / `failed`, observation snippet. Claimed before `invoke`; outcome stored before the task leaves `awaiting_human` | Receipt rows on `GET /tasks/{id}`; recovering a task left in `running` after the receipt is already stored |
+| Decide API | `POST .../resume`, `POST .../reject` (RBAC reuses `recommendation.decide`). In-flight receipt → HTTP 409 unless `{"reexecute": true}` | Dedicated `task.decide` permission |
+| Orchestrator | On approve with checkpoint + `PROAGENT_HITL_RESUME_CONTINUE=true` (default): if `PROAGENT_HITL_EXECUTE_ON_APPROVE` is true (default) and the snapshot matches the checkpoint, claim a receipt, `ToolRegistry.invoke` once (schema checked again; tool must still `requires_human_approval`), store the observation on the receipt, inject it, finish remaining plan steps, aggregate. A later resume with a `succeeded` or `failed` receipt reuses that observation and does not invoke. A `started` receipt fails closed (409) until explicit `reexecute`. Execute flag false: continue with an ack and do not run the tool. Continue flag false or no checkpoint: legacy mark-completed stub, tool not run. Reject never continues and never executes. | Approval that lasts across later calls in the same run |
 
 Toggles: `PROAGENT_HITL_RESUME_CONTINUE` (default `true`) and
 `PROAGENT_HITL_EXECUTE_ON_APPROVE` (default `true`). Execute applies only on
-the continue path. A tool name in the snapshot cannot select `http_fetch` or
+the continue path. The exactly-once receipt is always on for that path; there
+is no third flag. A tool name in the snapshot cannot select `http_fetch` or
 any other tool that does not set `requires_human_approval`. Reject/cancel
 never runs the gated tool.
 
+### Exactly-once execute receipt
+
+`POST .../resume` can be retried. If the process dies after `ToolRegistry.invoke`
+and before the task is marked `completed`, the side effect must not run again
+just because the task is still `awaiting_human`.
+
+When execute-on-approve is on, the orchestrator does this **before** it moves
+the task to `running`:
+
+1. Schema-check the stored arguments. A failure does not `run` and does not write a receipt.
+2. Insert `hitl_execute_receipts` with status `started` (unique fingerprint). The fingerprint is the SHA-256 of canonical `{task_id, tool, args_hash}`. `args_hash` is the SHA-256 of the arguments. The raw argument object is not a column. `tool_call_id` is stored beside the fingerprint. A later pause in the same task with the same tool and the same arguments is the same fingerprint and does not run again. Different arguments are a different fingerprint.
+3. `ToolRegistry.invoke` once.
+4. Update that same row to `succeeded` (ok result) or `failed` (tool error) and store an observation snippet (capped, opaque JSON). That update is the durable "this call is done" write. The task trace is filled in when the run finishes; the receipt is what a retry reads.
+
+A second resume for the same fingerprint:
+
+| Receipt status | Behavior |
+| --- | --- |
+| `succeeded` | Do not invoke. Re-inject the stored observation and continue the plan. `reexecute: true` does **not** run it again. |
+| `failed` | Do not invoke. Re-inject the stored error observation and continue, same as a tool error on the first attempt. |
+| `started` | Fail closed. Do not invoke. Leave the task at `awaiting_human`. HTTP 409. The side effect may already have happened, and the outcome was not stored. |
+| none | First attempt: claim `started`, then invoke. |
+
+Explicit re-approve for `started` only: `POST .../resume` with `{"reexecute": true}`. That runs the tool again and may duplicate the side effect. It updates the same row. Reject never reads that field and never executes.
+
+If the process dies after the task has already moved to `running`, a second resume is refused because the status is no longer `awaiting_human`. The receipt still blocks another invoke. Continuing that stuck run is not handled here.
+
 Code: `proagent_os/harness/hitl.py`, `Orchestrator.resume_after_hitl`, migrations
-`0005_task_hitl_pause` + `0006_hitl_checkpoint`. Trace phase `hitl`
-(`LoopPhase.HITL`). Proactive `emit_recommendation` is unchanged.
+`0005_task_hitl_pause` + `0006_hitl_checkpoint` + `0007_hitl_execute_receipts`.
+Trace phase `hitl` (`LoopPhase.HITL`). A reused or recorded execute adds
+`hitl_receipt` (`reused` or `recorded`) on the tool trace row. Proactive
+`emit_recommendation` is unchanged.
 
 ## Industry references (prefer official)
 

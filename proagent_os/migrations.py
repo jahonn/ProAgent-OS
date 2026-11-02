@@ -187,6 +187,42 @@ def _migration_0006_hitl_checkpoint(conn: sqlite3.Connection) -> None:
         )
 
 
+# Crash-safe exactly-once guard for HITL execute-on-approve.
+# A row is inserted as ``started`` before ToolRegistry.invoke and updated to
+# ``succeeded`` or ``failed`` with an observation snippet before the task is
+# treated as done. ``fingerprint`` is sha256(task_id, tool, args hash).
+# Arguments themselves are not a column. The observation is opaque JSON, never
+# a URL or shell command.
+_HITL_EXECUTE_RECEIPTS_SQL = """
+CREATE TABLE IF NOT EXISTS hitl_execute_receipts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL,
+    args_hash TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('started', 'succeeded', 'failed')),
+    observation_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hitl_execute_receipts_fingerprint
+    ON hitl_execute_receipts(fingerprint);
+
+CREATE INDEX IF NOT EXISTS idx_hitl_execute_receipts_task
+    ON hitl_execute_receipts(tenant_id, task_id, created_at);
+"""
+
+
+def _migration_0007_hitl_execute_receipts(conn: sqlite3.Connection) -> None:
+    _exec_script(conn, _HITL_EXECUTE_RECEIPTS_SQL)
+
+
 MIGRATIONS: List[Migration] = [
     Migration(1, "0001_baseline", _migration_0001_baseline),
     Migration(2, "0002_tenant_list_indexes", _migration_0002_tenant_list_indexes),
@@ -194,6 +230,7 @@ MIGRATIONS: List[Migration] = [
     Migration(4, "0004_tenant_role_overrides", _migration_0004_tenant_role_overrides),
     Migration(5, "0005_task_hitl_pause", _migration_0005_task_hitl_pause),
     Migration(6, "0006_hitl_checkpoint", _migration_0006_hitl_checkpoint),
+    Migration(7, "0007_hitl_execute_receipts", _migration_0007_hitl_execute_receipts),
 ]
 
 
