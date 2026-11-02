@@ -77,13 +77,14 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 | Knowledge | Per-tenant KB. BM25 by default; optional offline hybrid stub | Retrievers and stores you connect | Knowledge sources you attach |
 | Proactive HITL | Interval monitors file recommendations; approve can run a noop or one configured webhook | Human-input steps you add to your graph | Human-input steps you add to your crew or flow |
 | Task-run HITL | Stub: pause run to `awaiting_human`, resume/reject via API (OpenAI interruption / Anthropic confirm-action shaped) | Interrupt / human-in-the-loop nodes you wire | Human-input / approval steps you add |
+| Session compaction | Stub: summarize older turns, keep last N raw (`PROAGENT_COMPACTION_*`) | Session / thread memory you configure | Memory / context window tools you add |
 | Outcome loop | `record_outcome` stores a metric and nudges a skill weight | Evaluation in the tools you place around the library | Evaluation in the tools you place around the library |
 | Tenancy | FastAPI `/api/v1` and one Bearer API key per tenant | Your service owns auth and tenancy | Your service owns auth and tenancy |
 | This release | v0.1.0 early MVP. Approve can run a noop or a configured webhook. It does not run action code | Large ecosystem; production shape is yours | Large ecosystem; production shape is yours |
 
 ## Architecture
 
-Harness loop phases, industry mapping, task-run HITL pause/resume stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md) (`proagent_os/eval/`).
+Harness loop phases, industry mapping, task-run HITL pause/resume stub, session/context compaction stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md).
 
 Planner and aggregator stay text-only. Specialists call tools natively, for up to `PROAGENT_MAX_TOOL_ROUNDS` rounds (JSON-in-content is still accepted).
 
@@ -300,7 +301,7 @@ proagent-os/
 ├── verticals/example/       # Minimal vertical pattern
 ├── verticals/support_desk/  # Support desk pack (policies, triage, demo)
 ├── scripts/demo.py · demo_live.py · demo_support_desk.py · record_demo.py
-├── docs/DATABASE.md · DEMO.md · VERTICAL_SKILL.md · demo.cast · demo.svg
+├── docs/DATABASE.md · DEMO.md · EVAL.md · MEMORY.md · VERTICAL_SKILL.md · demo.cast · demo.svg
 ├── tests/
 └── docker-compose.yml
 ```

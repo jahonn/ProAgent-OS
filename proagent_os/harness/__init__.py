@@ -1,3 +1,11 @@
+from proagent_os.harness.compaction import (
+    CompactionConfig,
+    CompactionResult,
+    ExtractiveSummarizer,
+    compact_messages,
+    messages_for_llm,
+)
+from proagent_os.harness.memory import ConversationMemory
 from proagent_os.harness.loop import (
     LoopPhase,
     OUTER_LOOP_PHASES,
@@ -13,6 +21,12 @@ from proagent_os.harness.registry import AgentRegistry
 
 __all__ = [
     "AgentRegistry",
+    "CompactionConfig",
+    "CompactionResult",
+    "ConversationMemory",
+    "ExtractiveSummarizer",
+    "compact_messages",
+    "messages_for_llm",
     "LoopPhase",
     "OUTER_LOOP_PHASES",
     "Orchestrator",

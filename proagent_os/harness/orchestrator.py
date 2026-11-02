@@ -126,6 +126,13 @@ class Orchestrator:
             conversation_id = self.memory.create_conversation(tenant_id, title=input_text[:80])
         self.memory.add_message(conversation_id, "user", input_text)
 
+        # Session compaction stub: fold older turns when over thresholds.
+        # Originals stay in messages; summary row + tenant_memory are auditable.
+        compaction = self.memory.compact_if_needed(
+            conversation_id, tenant_id=tenant_id, persist=True
+        )
+        prior_block = self.memory.prior_context_block(conversation_id)
+
         task_id = new_id("task")
         now = utcnow()
         self.db.insert(
@@ -148,7 +155,20 @@ class Orchestrator:
         brand = self.brand.get(tenant_id)
         brand_block = brand.prompt_block() if brand else f"Tenant: {tenant_id}"
 
-        plan = await self._plan(input_text, brand_block, trace)
+        if compaction.compacted:
+            trace.append(
+                event(
+                    LoopPhase.COMPACTION,
+                    conversation_id=conversation_id,
+                    dropped_count=compaction.dropped_count,
+                    reason=compaction.reason,
+                    strategy=(compaction.meta or {}).get("strategy"),
+                    approx_chars_before=(compaction.meta or {}).get("approx_chars_before"),
+                    kept_recent=(compaction.meta or {}).get("kept_recent"),
+                )
+            )
+
+        plan = await self._plan(input_text, brand_block, trace, prior_context=prior_block)
         self.db.update(
             "tasks",
             {"plan_json": dumps(plan), "updated_at": utcnow()},
@@ -164,7 +184,13 @@ class Orchestrator:
                 agent_id = step.get("agent", "researcher")
                 goal = step.get("goal", input_text)
                 result = await self._run_specialist(
-                    agent_id, goal, input_text, brand_block, ctx, trace
+                    agent_id,
+                    goal,
+                    input_text,
+                    brand_block,
+                    ctx,
+                    trace,
+                    prior_context=prior_block,
                 )
                 step_results.append({"agent": agent_id, "goal": goal, "result": result})
         except RunPaused as paused:
@@ -240,15 +266,27 @@ class Orchestrator:
             "trace": trace,
         }
 
-    async def _plan(self, task: str, brand_block: str, trace: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _plan(
+        self,
+        task: str,
+        brand_block: str,
+        trace: List[Dict[str, Any]],
+        *,
+        prior_context: str = "",
+    ) -> Dict[str, Any]:
         planner = self.agents.get("planner")
         system = (planner.system_prompt if planner else "") or (
             "You are the Planner agent. Create a short plan as JSON with keys "
             "`steps` (list of {agent, goal, tools}) and `summary`."
         )
+        user_content = f"Task: {task}\n\nAvailable agents: {[a.id for a in self.agents.list()]}"
+        if prior_context:
+            user_content = (
+                f"Prior conversation (compacted):\n{prior_context}\n\n{user_content}"
+            )
         messages = [
             LLMMessage(role="system", content=f"{system}\n\n{brand_block}"),
-            LLMMessage(role="user", content=f"Task: {task}\n\nAvailable agents: {[a.id for a in self.agents.list()]}"),
+            LLMMessage(role="user", content=user_content),
         ]
         resp = await self.llm.chat(messages)
         parsed = _extract_json(resp.content) or {
@@ -269,6 +307,8 @@ class Orchestrator:
         brand_block: str,
         ctx: ToolContext,
         trace: List[Dict[str, Any]],
+        *,
+        prior_context: str = "",
     ) -> str:
         spec = self.agents.get(agent_id)
         tools_allowed = list((spec.tools if spec else []) or ["kb_search", "clock"])
@@ -281,9 +321,14 @@ class Orchestrator:
             "with no further tool calls."
             f"\nAllowed tools: {tools_allowed}\n\n{brand_block}\n\nSkills:\n{skill_bits}"
         )
+        user_blob = f"Overall task: {task}\nYour goal: {goal}"
+        if prior_context:
+            user_blob = (
+                f"Prior conversation (compacted):\n{prior_context}\n\n{user_blob}"
+            )
         messages: List[LLMMessage] = [
             LLMMessage(role="system", content=system),
-            LLMMessage(role="user", content=f"Overall task: {task}\nYour goal: {goal}"),
+            LLMMessage(role="user", content=user_blob),
         ]
 
         answer = ""

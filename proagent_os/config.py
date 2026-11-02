@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     fixtures_dir: str = "./fixtures"
     max_tool_rounds: int = 8  # specialist tool-calling loop limit
 
+    # Session / conversation compaction (stub). Summarize older turns; keep a
+    # recent raw window. Default summarizer is extractive (no live LLM).
+    # See docs/MEMORY.md. tiktoken is optional and not required.
+    compaction_enabled: bool = True
+    compaction_max_messages: int = Field(default=40, ge=1)
+    compaction_max_chars: int = Field(default=24_000, ge=512)
+    compaction_keep_recent: int = Field(default=12, ge=1)
+    compaction_summary_max_chars: int = Field(default=2000, ge=64)
+
     # Recommendation execution. noop acknowledges approval in-process (no network),
     # which is what the mock demo uses. webhook POSTs only to executor_webhook_url.
     # off records the decision and does not call an executor.

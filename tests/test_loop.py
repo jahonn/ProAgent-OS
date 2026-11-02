@@ -20,6 +20,7 @@ def test_loop_phase_wire_values_stable():
     assert LoopPhase.TOOL.value == "tool"
     assert LoopPhase.AGGREGATE.value == "aggregate"
     assert LoopPhase.HITL.value == "hitl"
+    assert LoopPhase.COMPACTION.value == "compaction"
     assert [p.value for p in OUTER_LOOP_PHASES] == [
         "plan",
         "specialist",
