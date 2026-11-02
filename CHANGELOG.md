@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- Draft proposed v0.1.1 human release notes: [docs/RELEASE_NOTES_v0.1.1.md](docs/RELEASE_NOTES_v0.1.1.md) (not tagged yet).
+
 ### Added
 
 - Plan-and-replan outer loop stub. After specialist steps, optional `PROAGENT_REPLAN_ENABLED` (default **false**, zero behavior change) may re-call the planner with prior plan + observations when triggers fire (empty plan, empty step results / aggregate inputs, all steps failed, or `PROAGENT_REPLAN_FORCE` for fixtures). Capped by `PROAGENT_REPLAN_MAX` (default 1). Trace phase `replan` (`LoopPhase.REPLAN`). Inner ReAct tool loop unchanged. Heuristic only — not an LLM sufficiency judge / DAG replanning / cost budgets. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
