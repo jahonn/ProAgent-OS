@@ -1,17 +1,25 @@
 # ProAgent OS
 
+[![Release v0.1.1](https://img.shields.io/badge/release-v0.1.1-2ea44f)](https://github.com/jahonn/ProAgent-OS/releases/tag/v0.1.1)
+[![CI](https://github.com/jahonn/ProAgent-OS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jahonn/ProAgent-OS/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![GitHub issues](https://img.shields.io/github/issues/jahonn/ProAgent-OS)](https://github.com/jahonn/ProAgent-OS/issues)
-[![CI](https://github.com/jahonn/ProAgent-OS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jahonn/ProAgent-OS/actions/workflows/ci.yml)
 
 **Self-hosted harness for commercial agent products.** A planner–specialist loop, a private knowledge base, proactive human approval, and a small outcome loop, exposed as a multi-tenant FastAPI app.
 
+**Latest release: [v0.1.1](https://github.com/jahonn/ProAgent-OS/releases/tag/v0.1.1).** [Release notes](docs/RELEASE_NOTES_v0.1.1.md) · [GitHub Releases](https://github.com/jahonn/ProAgent-OS/releases) · [CHANGELOG](CHANGELOG.md) `[0.1.1]`.
+
+**Two offline demos** after the [quick start](#quick-start-mock-llm) install (mock LLM, no API key):
+
+```bash
+python scripts/demo.py               # product loop — or: python scripts/demo_support_desk.py
+python scripts/demo_ops_incident.py  # on-call runbooks
+```
+
 Product name: **ProAgent OS** (`proagent-os`). Original design and code. It is an independent project and is not affiliated with any third-party agent product.
 
-> Status: **MVP / early open source** (0.1.1). Suitable for demos, scaffolding vertical packs, and self-hosted experiments. Read the [roadmap (issue #2)](https://github.com/jahonn/ProAgent-OS/issues/2) before any production SaaS use. History: [CHANGELOG.md](CHANGELOG.md).
->
-> **Releases / Changelog:** Upcoming **v0.1.1** (first public GitHub Release): [docs/RELEASE_NOTES_v0.1.1.md](docs/RELEASE_NOTES_v0.1.1.md). Canonical detail: [CHANGELOG.md](CHANGELOG.md) `[0.1.1]`.
+> Status: **MVP / early open source**. Suitable for demos, scaffolding vertical packs, and self-hosted experiments. Read the [roadmap (issue #2)](https://github.com/jahonn/ProAgent-OS/issues/2) before any production SaaS use.
 
 **Scan:** [Who it is for](#who-it-is-for) · [Quick start](#quick-start-mock-llm) · [Positioning](#positioning) · [Architecture](#architecture) · [Retrieval](#retrieval-modes) · [Roadmap](#roadmap)
 
@@ -24,11 +32,11 @@ Product name: **ProAgent OS** (`proagent-os`). Original design and code. It is a
 
 ## Quick start (mock LLM)
 
-Mock LLM, no API keys. The offline script is the one-minute path to a green run. Step-by-step output is in [docs/DEMO.md](docs/DEMO.md).
+Mock LLM, no API keys. Either offline script below is a one-minute path to a green run. Step-by-step output is in [docs/DEMO.md](docs/DEMO.md).
 
 [![ProAgent OS mock demo](docs/demo.svg)](docs/DEMO.md)
 
-Recorded with `PROAGENT_LLM_PROVIDER=mock` (no API key): `python scripts/demo.py`, then a short `python scripts/demo_support_desk.py` beat. Same session: [`docs/demo.cast`](docs/demo.cast) (`asciinema play docs/demo.cast`). Re-record with `python scripts/record_demo.py`.
+Recorded with `PROAGENT_LLM_PROVIDER=mock` (no API key): `python scripts/demo.py`, a short `python scripts/demo_support_desk.py` beat, then `python scripts/demo_ops_incident.py`. Same session: [`docs/demo.cast`](docs/demo.cast) (`asciinema play docs/demo.cast`). Re-record with `python scripts/record_demo.py`.
 
 ```bash
 git clone https://github.com/jahonn/ProAgent-OS.git
@@ -38,12 +46,14 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e .
 
-python scripts/demo.py      # offline demo → data/demo.db (gitignored)
+python scripts/demo.py                 # product loop → data/demo.db (gitignored)
+python scripts/demo_ops_incident.py    # on-call runbooks → data/demo_ops_incident.db
+# support policies, same mock provider: python scripts/demo_support_desk.py
 ```
 
-You should see a completed task, a recommendation titled `Conversion below 2.5% target` that the default noop executor marks executed, and a dashboard snapshot. Ids change every run. The demo tenant key is `pk_demo_acme_analytics`.
+`python scripts/demo.py` should show a completed task, a recommendation titled `Conversion below 2.5% target` that the default noop executor marks executed, and a dashboard snapshot. Ids change every run. The demo tenant key is `pk_demo_acme_analytics`.
 
-Two more offline packs use the same mock provider: `python scripts/demo_support_desk.py` (support policies) and `python scripts/demo_ops_incident.py` (on-call runbooks). Neither needs an API key.
+`python scripts/demo_ops_incident.py` ingests the Harborline runbooks, cites **API 5xx Runbook**, and approves **Page on-call: API 5xx runbook matches** through the noop executor. Nobody is paged. Tenant key `pk_demo_harborline_oncall`. Details: [verticals/ops_incident/README.md](verticals/ops_incident/README.md).
 
 Serve that same database (the demo key lives in `data/demo.db`, not in a fresh file):
 
@@ -378,6 +388,8 @@ Details: [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature ideas: [Git
 
 Commercial-readiness work and the path toward a more discoverable project are tracked in **[issue #2](https://github.com/jahonn/ProAgent-OS/issues/2)**.
 
+Published: first public GitHub Release **[v0.1.1](https://github.com/jahonn/ProAgent-OS/releases/tag/v0.1.1)** — [release notes](docs/RELEASE_NOTES_v0.1.1.md), [CHANGELOG](CHANGELOG.md) `[0.1.1]`.
+
 Known gaps in this tree:
 
 - sqlite-vec is an optional `vec0` index (`PROAGENT_KB_VECTOR_STORE=sqlite_vec`, extra `vec`). It is not HNSW, and one KNN query returns at most 4096 neighbors. pgvector is not wired. Default search remains BM25. The default vector store remains the offline blob plus Python cosine. Remote embeddings are available with `PROAGENT_KB_EMBED_BACKEND=openai`.
@@ -387,7 +399,6 @@ Known gaps in this tree:
 - A real evaluation harness (the learning loop is score nudges)
 - A payment provider. `usage_events` and `GET /api/v1/usage` are a metering stub (`billing: stub`) and do not create charges. OpenTelemetry export is optional (`pip install 'proagent-os[otel]'`, `PROAGENT_OTEL_ENABLED=true`) and stays off in the default install.
 - A richer product UI and i18n
-- First public GitHub Release **v0.1.1** — [release notes](docs/RELEASE_NOTES_v0.1.1.md), [CHANGELOG](CHANGELOG.md) `[0.1.1]`. The annotated tag is cut from the merged commit ([issue #2](https://github.com/jahonn/ProAgent-OS/issues/2)).
 
 ## Security
 

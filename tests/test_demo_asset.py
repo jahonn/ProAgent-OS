@@ -123,6 +123,7 @@ def test_checked_in_recording_matches_the_mock_path():
         assert marker in visible
     assert "python scripts/demo.py" in visible
     assert "python scripts/demo_support_desk.py" in visible
+    assert "python scripts/demo_ops_incident.py" in visible
     assert "PROAGENT_LLM_PROVIDER=mock" in visible
     plain_lines = []
     plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", "".join(chunks))
@@ -135,7 +136,13 @@ def test_checked_in_recording_matches_the_mock_path():
     assert root.get("width") == str(18 * 2 + round(rec.COLS * rec.CHAR_PX))
     assert root.get("height") == str(44 + rec.ROWS * rec.LINE_PX + 14)
     assert "repeatCount" in svg
-    for marker in ("=== ProAgent OS Demo ===", "pk_demo_acme_analytics", "=== ProAgent OS Support Desk Demo ==="):
+    for marker in (
+        "=== ProAgent OS Demo ===",
+        "pk_demo_acme_analytics",
+        "=== ProAgent OS Support Desk Demo ===",
+        "=== ProAgent OS Ops Incident Demo ===",
+        "pk_demo_harborline_oncall",
+    ):
         assert marker in svg
     for marker in rec.REQUIRED_MARKERS:
         assert marker in rec.visible_text(svg)
