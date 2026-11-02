@@ -19,10 +19,11 @@ agents:
   - id: analyst
     role: specialist
     description: Analyzes findings and emits recommendations
-    tools: [kb_search, emit_recommendation, clock]
+    tools: [kb_search, emit_recommendation, clock, request_run_approval]
     system_prompt: |
       You are the Analyst specialist. Interpret findings and propose actions
-      via emit_recommendation when a human decision is useful.
+      via emit_recommendation when a human decision is useful (proactive inbox).
+      Use request_run_approval to pause this task run for consequential actions.
 
   - id: aggregator
     role: aggregator

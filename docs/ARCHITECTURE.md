@@ -61,6 +61,29 @@ Approvals are **product pauses**, not a new chat turn — the same distinction
 OpenAI documents for run interruptions. Executors never treat the action payload
 as a URL or shell command (`proagent_os/proactive/executors.py`).
 
+## Task-run HITL pause / resume (stub)
+
+Aligns with OpenAI Agents **run interruptions** and Anthropic computer-use
+**confirm consequential actions**, without replacing the recommendation inbox.
+
+```mermaid
+flowchart LR
+  run[Task running] -->|request_run_approval or POST pause| pause[awaiting_human]
+  pause -->|POST resume| done[completed + hitl_decision=approved]
+  pause -->|POST reject| cancel[cancelled + hitl_decision=rejected]
+```
+
+| Piece | Behavior now (stub) | Planned |
+| --- | --- | --- |
+| Status | `running` → `awaiting_human` → `completed` \| `cancelled` | Resume continues the specialist mid-loop |
+| Trigger | Tool with `requires_human_approval` (builtin `request_run_approval`) or `POST /api/v1/tasks/{id}/pause` | Guardrail / policy interrupts mid-tool batch |
+| Payload | `pending_action_json` opaque JSON; never URL/shell | Typed action schemas + dry-run previews |
+| Decide API | `POST .../resume`, `POST .../reject` (RBAC reuses `recommendation.decide`) | Dedicated `task.decide` permission + audit table |
+| Orchestrator | Stops cleanly; resume marks completed with decision recorded | Re-enter tool loop after approve; skip or run gated tool |
+
+Code: `proagent_os/harness/hitl.py`, hooks in `orchestrator.py`, migration `0005_task_hitl_pause`.
+Trace phase `hitl` (`LoopPhase.HITL`). Proactive `emit_recommendation` is unchanged.
+
 ## Industry references (prefer official)
 
 | Theme | Source | URL |
@@ -88,7 +111,8 @@ LangGraph/CrewAI; we keep a small FastAPI + SQLite product shell.
 | Typed `LoopPhase` + `event()` trace hooks | Session/thread compaction for long chats |
 | `tool_trajectory` / `summarize_run` helpers | Exact-match / ADK numeric trajectory scores |
 | Golden-task runner + ordered-subset CI asserts (`proagent_os/eval/`) | LLM-as-judge + live LangSmith datasets |
-| Docs mapping to platform patterns | Guardrail interrupts that pause mid-specialist |
+| Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
+| Task-run HITL pause/resume stub (`awaiting_human`) | Mid-run continue after approve; dedicated task audit |
 | Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)
@@ -100,5 +124,6 @@ for fixture layout and matching rules.
 - `proagent_os/harness/loop.py` — phases and trajectory helpers
 - `proagent_os/eval/` — golden-task loader + trajectory compare stub
 - `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format
+- `proagent_os/harness/hitl.py` — task-run pause / resume / reject stub
 - `proagent_os/proactive/` — monitors, recommendations, executors
 - `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/VERTICAL_SKILL.md`

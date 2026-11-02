@@ -150,11 +150,36 @@ def _migration_0004_tenant_role_overrides(conn: sqlite3.Connection) -> None:
     _exec_script(conn, _TENANT_ROLE_OVERRIDES_SQL)
 
 
+# Task-run HITL pause fields. pending_action_json is opaque JSON, never a shell/URL.
+
+
+def _migration_0005_task_hitl_pause(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    # Additive ALTERs; skip columns already present (idempotent for partial retries).
+    if "pause_reason" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN pause_reason TEXT NOT NULL DEFAULT ''")
+    if "pending_action_json" not in cols:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN pending_action_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "hitl_decision" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN hitl_decision TEXT NOT NULL DEFAULT ''")
+    if "hitl_decided_at" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN hitl_decided_at TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tasks_tenant_status
+            ON tasks(tenant_id, status, updated_at)
+        """
+    )
+
+
 MIGRATIONS: List[Migration] = [
     Migration(1, "0001_baseline", _migration_0001_baseline),
     Migration(2, "0002_tenant_list_indexes", _migration_0002_tenant_list_indexes),
     Migration(3, "0003_usage_events", _migration_0003_usage_events),
     Migration(4, "0004_tenant_role_overrides", _migration_0004_tenant_role_overrides),
+    Migration(5, "0005_task_hitl_pause", _migration_0005_task_hitl_pause),
 ]
 
 

@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from proagent_os.config import get_settings
+from proagent_os.harness.hitl import TaskHitlService
 from proagent_os.harness.orchestrator import Orchestrator
 from proagent_os.harness.registry import AgentRegistry
 from proagent_os.llm.factory import get_llm
@@ -33,6 +34,7 @@ class AppServices:
         self.recommendations = RecommendationService()
         self.metrics = MetricsAdapter()
         self.learning = LearningLoop()
+        self.hitl = TaskHitlService()
 
 
 @lru_cache

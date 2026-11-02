@@ -30,6 +30,7 @@ class LoopPhase(str, Enum):
     SPECIALIST = "specialist"
     TOOL = "tool"
     AGGREGATE = "aggregate"
+    HITL = "hitl"
 
 
 # Documented outer-loop order (specialist may emit many TOOL rows between).

@@ -95,3 +95,17 @@ class OutcomeCreate(BaseModel):
 
 class SkillInvoke(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskPause(BaseModel):
+    """Explicit pause of a running task (run-level HITL stub)."""
+
+    reason: str = "human_approval_required"
+    pending_action: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskHitlNote(BaseModel):
+    """Optional note on resume / reject."""
+
+    note: str = ""
+
