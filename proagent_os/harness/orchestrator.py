@@ -334,7 +334,15 @@ class Orchestrator:
             )
 
         if not answer:
-            answer = f"[{agent_id}] completed {sum(1 for t in trace if t.get("phase") == LoopPhase.TOOL.value and t.get("agent") == agent_id)} tool call(s); no textual final answer."
+            tool_count = sum(
+                1
+                for t in trace
+                if t.get("phase") == LoopPhase.TOOL.value and t.get("agent") == agent_id
+            )
+            answer = (
+                f"[{agent_id}] completed {tool_count} tool call(s); "
+                "no textual final answer."
+            )
         return answer
 
     async def _aggregate(
