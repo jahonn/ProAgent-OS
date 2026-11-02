@@ -43,6 +43,8 @@ python scripts/demo.py      # offline demo → data/demo.db (gitignored)
 
 You should see a completed task, a recommendation titled `Conversion below 2.5% target` that the default noop executor marks executed, and a dashboard snapshot. Ids change every run. The demo tenant key is `pk_demo_acme_analytics`.
 
+Two more offline packs use the same mock provider: `python scripts/demo_support_desk.py` (support policies) and `python scripts/demo_ops_incident.py` (on-call runbooks). Neither needs an API key.
+
 Serve that same database (the demo key lives in `data/demo.db`, not in a fresh file):
 
 ```bash
@@ -198,7 +200,7 @@ docker compose up --build
 | `PROAGENT_KB_EMBED_API_KEY` | empty | Bearer token. Empty uses `PROAGENT_LLM_API_KEY` |
 | `PROAGENT_KB_HYBRID_ALPHA` | `0.5` | Hybrid mix: `α * norm(vector) + (1 - α) * norm(BM25)` |
 | `PROAGENT_KB_VECTOR_STORE` | `blob` | `blob` (Python cosine) or `sqlite_vec` (optional `vec0` index) |
-| `PROAGENT_SKILLS_DIRS` | `./skills,./verticals/example/skills,./verticals/support_desk/skills` | Skill pack roots |
+| `PROAGENT_SKILLS_DIRS` | `./skills,./verticals/example/skills,./verticals/support_desk/skills,./verticals/ops_incident/skills` | Skill pack roots |
 | `PROAGENT_AGENTS_CONFIG` | `./config/agents.yaml` | Core agent registry |
 | `PROAGENT_OTEL_ENABLED` | `false` | OpenTelemetry spans. `false` does not import `opentelemetry` |
 | `PROAGENT_OTEL_EXPORTER` | `console` | `console`, `otlp`, or `none`. Used only when spans are enabled |
@@ -308,7 +310,8 @@ proagent-os/
 ├── skills/
 ├── verticals/example/       # Minimal vertical pattern
 ├── verticals/support_desk/  # Support desk pack (policies, triage, demo)
-├── scripts/demo.py · demo_live.py · demo_support_desk.py · record_demo.py
+├── verticals/ops_incident/  # On-call pack (runbooks, triage, demo)
+├── scripts/demo.py · demo_live.py · demo_support_desk.py · demo_ops_incident.py · record_demo.py
 ├── docs/DATABASE.md · DEMO.md · EVAL.md · MEMORY.md · TOOLS.md · VERTICAL_SKILL.md · demo.cast · demo.svg
 ├── tests/
 └── docker-compose.yml
@@ -318,11 +321,16 @@ proagent-os/
 
 1. Create `verticals/<your_vertical>/agents/agents.yaml`. Startup merges every `verticals/*/agents/agents.yaml`. Core agents stay in `PROAGENT_AGENTS_CONFIG`.
 2. Add `verticals/<your_vertical>/skills/<id>/SKILL.md` (optional `run.py`).
-3. Append that skills directory to `PROAGENT_SKILLS_DIRS` if it is not already listed. The default includes `verticals/example/skills` and `verticals/support_desk/skills`.
+3. Append that skills directory to `PROAGENT_SKILLS_DIRS` if it is not already listed. The default includes `verticals/example/skills`, `verticals/support_desk/skills`, and `verticals/ops_incident/skills`.
 4. Restart the API and worker from the repo root. No other core code changes are required.
 
-`verticals/example/` is the minimal pattern (`market_scout` + `market_scan`).
-`verticals/support_desk/` is a support-desk pack: sample policies, `support_triage`, `ticket_triage` / `policy_lookup`, and `python scripts/demo_support_desk.py` (mock LLM, no API key). It is an MVP demo, not a production helpdesk.
+| Pack | Agent | Skills | Demo |
+|------|--------|--------|------|
+| `verticals/example/` | `market_scout` | `market_scan` | Minimal pattern. No separate script. |
+| `verticals/support_desk/` | `support_triage` | `ticket_triage`, `policy_lookup` | `python scripts/demo_support_desk.py` |
+| `verticals/ops_incident/` | `incident_commander` | `incident_triage`, `runbook_lookup` | `python scripts/demo_ops_incident.py` |
+
+Startup merges every `verticals/*/agents/agents.yaml`, including `ops_incident`, in sorted path order (`example`, then `ops_incident`, then `support_desk`). `verticals/support_desk/` is a support-desk pack with sample policies. `verticals/ops_incident/` is an on-call pack with sample runbooks. Both demos use the mock LLM and need no API key. They are MVP demos, not a production helpdesk or paging system.
 
 File-by-file steps for that layout, the startup merge, `PROAGENT_SKILLS_DIRS`, and a mock-LLM smoke test are in [docs/VERTICAL_SKILL.md](docs/VERTICAL_SKILL.md).
 
