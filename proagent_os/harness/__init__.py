@@ -18,6 +18,7 @@ from proagent_os.harness.loop import (
 )
 from proagent_os.harness.orchestrator import Orchestrator
 from proagent_os.harness.registry import AgentRegistry
+from proagent_os.harness.replan import observations_summary, should_replan, step_looks_failed
 
 __all__ = [
     "AgentRegistry",
@@ -36,4 +37,7 @@ __all__ = [
     "phase_value",
     "summarize_run",
     "tool_trajectory",
+    "observations_summary",
+    "should_replan",
+    "step_looks_failed",
 ]

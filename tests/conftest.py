@@ -49,6 +49,10 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_COMPACTION_MAX_CHARS", "24000")
     monkeypatch.setenv("PROAGENT_COMPACTION_KEEP_RECENT", "12")
     monkeypatch.setenv("PROAGENT_COMPACTION_SUMMARY_MAX_CHARS", "2000")
+    # Outer replan stub: default off so existing tests keep zero extra plan calls.
+    monkeypatch.setenv("PROAGENT_REPLAN_ENABLED", "false")
+    monkeypatch.setenv("PROAGENT_REPLAN_MAX", "1")
+    monkeypatch.setenv("PROAGENT_REPLAN_FORCE", "false")
     monkeypatch.setenv("PROAGENT_AGENTS_CONFIG", str(Path("config/agents.yaml").resolve()))
     monkeypatch.setenv(
         "PROAGENT_SKILLS_DIRS",
