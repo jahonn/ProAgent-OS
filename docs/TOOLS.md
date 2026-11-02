@@ -40,10 +40,10 @@ it. The orchestrator stores a snapshot and pauses the task at `awaiting_human`:
 2. Requires the checkpoint `tool_name` and `gated_arguments` to match.
 3. Refuses tools that are missing, not allowed for the specialist, or not marked `requires_human_approval` (so a pending payload cannot select `http_fetch`).
 4. Calls `ToolRegistry.invoke` **once** when `PROAGENT_HITL_EXECUTE_ON_APPROVE` is true (default). Schema is checked again before the call; a failure does not `run` and does not write a receipt.
-5. Before `invoke`, inserts an `hitl_execute_receipts` row (`started`) keyed by a fingerprint of task id, tool name, and args hash. After `invoke`, that row becomes `succeeded` or `failed` and stores an observation snippet. A later resume reuses a finished receipt and does not call `invoke` again. A `started` row (crash mid-flight) is fail-closed: HTTP 409, task stays `awaiting_human`, no automatic re-run. `{"reexecute": true}` is the explicit re-approve for that in-flight row only and may duplicate the side effect. A `succeeded` row is never run again. See [ARCHITECTURE.md](ARCHITECTURE.md).
+5. Before `invoke`, inserts an `hitl_execute_receipts` row (`started`) keyed by a fingerprint of task id, tool name, and args hash. After `invoke`, that row becomes `succeeded` or `failed` and stores an observation snippet. A later resume reuses a finished receipt and does not call `invoke` again. A `started` row while the task is still `awaiting_human` is fail-closed: HTTP 409, no automatic re-run. `{"reexecute": true}` is the explicit re-approve for that in-flight row only and may duplicate the side effect. A `succeeded` or `failed` row is never run again. If the task is already `running` and the receipt for the open checkpoint is finished, the same `POST .../resume` re-injects the stored observation and finishes the plan without a second `invoke`. A `running` task with a `started` receipt is HTTP 409 even with `reexecute`. See [ARCHITECTURE.md](ARCHITECTURE.md).
 6. Appends the observation and finishes remaining plan steps.
 
-`POST .../reject` cancels the task and does not call `invoke`.
+`POST .../reject` cancels the task and does not call `invoke`. It also cancels a `running` task that still has an open HITL checkpoint, still without calling `invoke`.
 `PROAGENT_HITL_RESUME_CONTINUE=false` is the legacy stub: approve marks
 `completed` and does not run the tool. `PROAGENT_HITL_EXECUTE_ON_APPROVE=false`
 still continues the loop, with an acknowledgement instead of a tool run.

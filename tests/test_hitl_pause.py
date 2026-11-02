@@ -22,6 +22,7 @@ from proagent_os.harness.hitl import (
     sanitize_pending_action,
 )
 from proagent_os.harness.loop import LoopPhase
+from proagent_os.harness.orchestrator import Orchestrator
 from proagent_os.llm.base import LLMMessage, LLMResponse, ToolCall
 from proagent_os.main import create_app
 from proagent_os.professional.tools.base import Tool, ToolContext, ToolResult
@@ -186,6 +187,10 @@ def test_pause_resume_reject_service_transitions():
     rejected = hitl.reject_task(tid, task_id2, actor="ops")
     assert rejected["status"] == STATUS_CANCELLED
     assert rejected["hitl_decision"] == "rejected"
+
+    plain = _seed_running_task(tid)
+    with pytest.raises(ValueError, match="awaiting_human"):
+        hitl.reject_task(tid, plain, actor="ops")
 
 
 @pytest.mark.asyncio
@@ -1109,3 +1114,206 @@ async def test_api_started_receipt_returns_409_until_reexecute(monkeypatch):
     assert rejected.status_code == 200, rejected.text
     assert rejected.json()["status"] == STATUS_CANCELLED
     assert ledger.runs == []
+
+
+@pytest.mark.asyncio
+async def test_stuck_running_succeeded_receipt_recovers_without_second_invoke(monkeypatch):
+    """Crash after the succeed receipt and after status is running, before completed.
+
+    A second resume finishes the open checkpoint and does not invoke again,
+    even when reexecute is true.
+    """
+    tid = _tenant("pk_hitl_stuck_running")
+    svc = get_services()
+    ledger = _install_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+    assert paused["status"] == STATUS_AWAITING_HUMAN
+    assert ledger.runs == []
+
+    original = Orchestrator._run_specialist
+    armed = {"on": True}
+
+    async def crash_after_reopen(self, *args, **kwargs):
+        if armed["on"] and kwargs.get("hitl_resume_note"):
+            armed["on"] = False
+            raise RuntimeError("synthetic crash after task reopened to running")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Orchestrator, "_run_specialist", crash_after_reopen)
+    with pytest.raises(RuntimeError, match="reopened to running"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops", note="post it")
+
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    crashed = svc.hitl.get_task(tid, paused["task_id"])
+    assert crashed["status"] == STATUS_RUNNING
+    assert crashed["hitl_decision"] == "approved"
+    assert crashed["hitl_checkpoint"].get("conversation_id")
+    receipts = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "succeeded"
+    assert loads(receipts[0]["observation_json"], {}).get("ok") is True
+
+    monkeypatch.setattr(Orchestrator, "_run_specialist", original)
+
+    app = create_app()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer pk_hitl_stuck_running"}
+    set_tenant_role(tid, Role.TENANT_READONLY.value)
+    denied = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/resume",
+        headers=headers,
+        json={"note": "again", "reexecute": True},
+    )
+    assert denied.status_code == 403
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_RUNNING
+
+    set_tenant_role(tid, Role.TENANT_OPERATOR.value)
+    resumed = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/resume",
+        headers=headers,
+        json={"note": "post it", "reexecute": True},
+    )
+    assert resumed.status_code == 200, resumed.text
+    body = resumed.json()
+    assert body["status"] == STATUS_COMPLETED
+    assert body.get("hitl") == "recovered"
+    assert body.get("gated_tool_executed") is True
+    assert "SECOND_STEP_OK" in (body.get("result") or "")
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    reused = [
+        e for e in body["trace"] if e.get("phase") == "tool" and e.get("hitl_receipt") == "reused"
+    ]
+    assert len(reused) == 1
+    assert reused[0]["name"] == "gated_ledger"
+    assert not any(e.get("hitl_receipt") == "recorded" for e in body["trace"])
+    recover_events = [
+        e for e in body["trace"] if e.get("phase") == "hitl" and e.get("action") == "recover"
+    ]
+    assert len(recover_events) == 1
+    again = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(again) == 1
+    assert again[0]["id"] == receipts[0]["id"]
+    assert again[0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_stuck_running_failed_receipt_recovers_without_second_invoke(monkeypatch):
+    """A failed receipt on a running task is re-injected. The tool is not run again."""
+    tid = _tenant("pk_hitl_stuck_failed")
+    svc = get_services()
+    ledger = _install_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+
+    original = Orchestrator._run_specialist
+
+    async def crash_after_reopen(self, *args, **kwargs):
+        if kwargs.get("hitl_resume_note"):
+            raise RuntimeError("synthetic crash after task reopened to running")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Orchestrator, "_run_specialist", crash_after_reopen)
+    with pytest.raises(RuntimeError, match="reopened to running"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops")
+    monkeypatch.setattr(Orchestrator, "_run_specialist", original)
+
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_RUNNING
+    receipts = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(receipts) == 1
+    get_db().update(
+        "hitl_execute_receipts",
+        {
+            "status": "failed",
+            "observation_json": dumps(
+                {"ok": False, "output": None, "error": "ledger down"}
+            ),
+            "error": "ledger down",
+        },
+        "id=?",
+        (receipts[0]["id"],),
+    )
+
+    resumed = await svc.orchestrator.resume_after_hitl(
+        tid, paused["task_id"], actor="ops", note="use the error", reexecute=True
+    )
+    assert resumed["status"] == STATUS_COMPLETED
+    assert resumed.get("hitl") == "recovered"
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    finished = TaskHitlService().list_execute_receipts(tid, paused["task_id"])
+    assert len(finished) == 1
+    assert finished[0]["status"] == "failed"
+    assert finished[0]["id"] == receipts[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_stuck_running_started_receipt_fail_closed_and_reject(monkeypatch):
+    """running + started receipt: 409 even with reexecute. Reject never executes."""
+    tid = _tenant("pk_hitl_stuck_started")
+    svc = get_services()
+    ledger = _install_ledger(svc)
+    monkeypatch.setattr(svc.orchestrator, "llm", _LedgerLLM())
+    paused = await svc.orchestrator.run_task(tid, "Record a deposit")
+
+    def crash_before_finish(self, receipt_id, *, status, observation, error=""):
+        raise RuntimeError("synthetic crash before execute receipt succeeded")
+
+    original_finish = TaskHitlService.finish_execute_receipt
+    monkeypatch.setattr(TaskHitlService, "finish_execute_receipt", crash_before_finish)
+    with pytest.raises(RuntimeError, match="before execute receipt succeeded"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops")
+    monkeypatch.setattr(TaskHitlService, "finish_execute_receipt", original_finish)
+
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_AWAITING_HUMAN
+    get_db().update(
+        "tasks",
+        {"status": STATUS_RUNNING},
+        "id=?",
+        (paused["task_id"],),
+    )
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_RUNNING
+
+    with pytest.raises(HitlExecuteBlocked, match="running"):
+        await svc.orchestrator.resume_after_hitl(tid, paused["task_id"], actor="ops")
+    with pytest.raises(HitlExecuteBlocked, match="reexecute"):
+        await svc.orchestrator.resume_after_hitl(
+            tid, paused["task_id"], actor="ops", reexecute=True
+        )
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_RUNNING
+
+    app = create_app()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer pk_hitl_stuck_started"}
+    set_tenant_role(tid, Role.TENANT_READONLY.value)
+    denied = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/reject",
+        headers=headers,
+        json={"note": "stop", "reexecute": True},
+    )
+    assert denied.status_code == 403
+    assert svc.hitl.get_task(tid, paused["task_id"])["status"] == STATUS_RUNNING
+
+    set_tenant_role(tid, Role.TENANT_OPERATOR.value)
+    blocked = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/resume",
+        headers=headers,
+        json={"reexecute": True},
+    )
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert "running" in detail
+    assert "reexecute" in detail
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+
+    rejected = client.post(
+        f"/api/v1/tasks/{paused['task_id']}/reject",
+        headers=headers,
+        json={"note": "stop", "reexecute": True},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == STATUS_CANCELLED
+    assert ledger.runs == [{"entry": "deposit", "amount": 5}]
+    assert TaskHitlService().list_execute_receipts(tid, paused["task_id"])[0]["status"] == "started"

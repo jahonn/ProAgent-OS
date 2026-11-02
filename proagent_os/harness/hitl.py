@@ -31,15 +31,20 @@ payload is a gated-tool snapshot, the orchestrator runs that tool once
 plan steps. That execute path is guarded by ``hitl_execute_receipts``
 (migration ``0007``): a ``started`` row is committed before ``invoke``, and
 the same row is updated to ``succeeded`` or ``failed`` with an observation
-snippet before the task is treated as done. A later resume reuses a
+snippet before the task leaves ``awaiting_human``. A later resume reuses a
 ``succeeded`` or ``failed`` observation and does not invoke again. A
-``started`` row (crash mid-flight) fails closed: no automatic re-run;
-``reexecute=true`` on resume is the explicit re-approve, and it may duplicate
-a side effect. A ``succeeded`` receipt is never run again. Execute flag false:
-continue with an ack and do not run the tool. Without a checkpoint, or when
-the continue flag is false, approve still marks ``completed`` (legacy stub)
-and does not run the tool. Reject always cancels; it never continues and
-never executes the gated tool.
+``started`` row (crash mid-flight, task still ``awaiting_human``) fails
+closed: no automatic re-run; ``reexecute=true`` on resume is the explicit
+re-approve, and it may duplicate a side effect. A ``succeeded`` receipt is
+never run again. If the process dies after the task is already ``running``
+and the receipt is ``succeeded`` or ``failed``, the same resume route
+re-injects that observation and finishes the open checkpoint. It does not
+invoke. A ``running`` task with a ``started`` receipt fails closed (409),
+including when ``reexecute`` is true. Execute flag false: continue with an
+ack and do not run the tool. Without a checkpoint, or when the continue flag
+is false, approve still marks ``completed`` (legacy stub) and does not run
+the tool. Reject cancels ``awaiting_human``, and also a ``running`` task that
+still has an open checkpoint. It never executes the gated tool.
 """
 
 from __future__ import annotations
@@ -180,10 +185,13 @@ def sanitize_checkpoint(raw: Any) -> Dict[str, Any]:
 
 
 class HitlExecuteBlocked(Exception):
-    """Fail-closed: a gated tool has an in-flight execute receipt.
+    """Fail-closed: a gated tool must not be invoked.
 
-    The side effect might already have run. Callers must not invoke again
-    unless the operator explicitly re-approves (``reexecute=true``).
+    The usual case is an in-flight (``started``) execute receipt. The side
+    effect might already have run. While the task is still ``awaiting_human``,
+    callers may invoke again only after an explicit ``reexecute=true``.
+    A task already in ``running`` with a ``started`` receipt is never
+    re-executed from this exception; cancel it instead.
     """
 
     def __init__(self, message: str, *, receipt_id: str = "") -> None:
@@ -619,6 +627,51 @@ class TaskHitlService:
             receipt_id=str(receipt.get("id") or ""),
         )
 
+    def peek_execute_receipt(
+        self,
+        *,
+        tenant_id: str,
+        task_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Read the receipt for this fingerprint. Does not insert or update."""
+        _args_hash, fingerprint = execute_fingerprint(task_id, tool_name, arguments)
+        return self.get_execute_receipt(tenant_id, fingerprint)
+
+    def receipt_observation(self, receipt: Dict[str, Any]) -> Dict[str, Any]:
+        """Decode a finished receipt's observation. Does not invoke.
+
+        ``started`` and a non-object snippet fail closed. Callers decide
+        whether ``reexecute`` is still appropriate; this method never runs
+        the tool.
+        """
+        status = receipt.get("status")
+        receipt_id = str(receipt.get("id") or "")
+        tool_name = str(receipt.get("tool_name") or "")
+        if status == RECEIPT_STARTED:
+            raise HitlExecuteBlocked(
+                f"Gated tool {tool_name!r} has an in-flight execute receipt ({receipt_id}) "
+                "with status 'started'. The outcome was not recorded, so the side effect "
+                "is not run again.",
+                receipt_id=receipt_id,
+            )
+        if status not in (RECEIPT_SUCCEEDED, RECEIPT_FAILED):
+            raise HitlExecuteBlocked(
+                f"Gated tool {tool_name!r} has an execute receipt with unexpected status "
+                f"{status!r}. Refusing to run the side effect.",
+                receipt_id=receipt_id,
+            )
+        observation = loads(receipt.get("observation_json") or "", None)
+        if not isinstance(observation, dict):
+            raise HitlExecuteBlocked(
+                f"Gated tool {tool_name!r} has a {status} execute receipt "
+                f"({receipt_id}) with no reusable observation. "
+                "Refusing to run the side effect again.",
+                receipt_id=receipt_id,
+            )
+        return observation
+
     def reject_task(
         self,
         tenant_id: str,
@@ -627,9 +680,21 @@ class TaskHitlService:
         actor: str = "",
         note: str = "",
     ) -> Dict[str, Any]:
-        """awaiting_human → cancelled. Never continues the run."""
+        """Cancel without executing.
+
+        ``awaiting_human`` → ``cancelled`` (the pause decision).
+
+        ``running`` with an open HITL checkpoint → ``cancelled`` as well.
+        That is the force-cancel for a continue that died after approve, or
+        for a ``running`` task whose execute receipt is still ``started``.
+        A ``running`` task with no checkpoint is unchanged and rejected with
+        ``ValueError``. This method never calls a tool.
+        """
         row = self._require(tenant_id, task_id)
-        if row["status"] != STATUS_AWAITING_HUMAN:
+        stuck_continue = row["status"] == STATUS_RUNNING and checkpoint_is_resumable(
+            row.get("hitl_checkpoint")
+        )
+        if row["status"] != STATUS_AWAITING_HUMAN and not stuck_continue:
             raise ValueError(
                 f"cannot reject task in status {row['status']!r}; "
                 f"expected {STATUS_AWAITING_HUMAN!r}"
@@ -644,6 +709,7 @@ class TaskHitlService:
                 actor=actor or "",
                 note=decision_note,
                 stub=True,
+                stuck_running=stuck_continue,
             )
         )
         prior = (row.get("result") or "").strip()
