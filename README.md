@@ -67,7 +67,7 @@ uvicorn proagent_os.main:app --host 0.0.0.0 --port 8080
 python -m proagent_os.worker
 ```
 
-Open http://localhost:8080 and paste `pk_demo_acme_analytics`. On the task console, **Run mock approval** pauses a mock run at `awaiting_human` (no network). Resume and Reject show for that tenant operator key, and execute receipts list tool name and status only. See [docs/DEMO.md](docs/DEMO.md). API docs: http://localhost:8080/docs.
+Open http://localhost:8080 and paste `pk_demo_acme_analytics`. On the task console, **Run mock approval** pauses a mock run at `awaiting_human` (no network). Resume and Reject show for that tenant operator key, and execute receipts list tool name and status only. See [docs/DEMO.md](docs/DEMO.md). API docs: http://localhost:8080/docs. OpenAPI `info.version` is `proagent_os.__version__`, the same value as `GET /health`.
 
 To start from an empty database instead, set `PROAGENT_DB_PATH=./data/proagent.db` and create a tenant:
 
