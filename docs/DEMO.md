@@ -22,19 +22,12 @@ What was recorded, with `PROAGENT_LLM_PROVIDER=mock`, no API key, and no model n
 ```bash
 python scripts/demo.py
 python scripts/demo_support_desk.py
-```
-
-`scripts/demo.py` is the full path: tenant, knowledge base, task, monitor, noop executor, outcome. The support-desk script is the shorter second beat (policy search, `ticket_triage`, and a follow-up the noop executor marks executed without sending a reply).
-
-Lines longer than 100 columns are wrapped on spaces so the frame stays readable. The words are the scripts' stdout. Identifiers change when the recording is regenerated.
-
-The on-call pack is a third offline script. It is not in `docs/demo.cast`.
-
-```bash
 python scripts/demo_ops_incident.py
 ```
 
-That run ingests the Harborline runbooks, cites **API 5xx Runbook** from `incident_triage`, completes a mock task (`researcher` then `analyst`), and approves **Page on-call: API 5xx runbook matches** through the noop executor. Nobody is paged. Details are in `verticals/ops_incident/README.md`.
+`scripts/demo.py` is the full path: tenant, knowledge base, task, monitor, noop executor, outcome. The support-desk script is the shorter second beat (policy search, `ticket_triage`, and a follow-up the noop executor marks executed without sending a reply). The third beat, `scripts/demo_ops_incident.py`, ingests the Harborline runbooks, cites **API 5xx Runbook** from `incident_triage`, completes a mock task (`researcher` then `analyst`), and approves **Page on-call: API 5xx runbook matches** through the noop executor. Nobody is paged. Details are in `verticals/ops_incident/README.md`.
+
+Lines longer than 100 columns are wrapped on spaces so the frame stays readable. The words are the scripts' stdout. Identifiers change when the recording is regenerated.
 
 Re-record from the repo root after the install in [Setup](#setup):
 
@@ -65,7 +58,7 @@ Python 3.11 or newer. The demo needs the install above; it does not need Docker 
 python scripts/demo.py
 ```
 
-That command is the first half of the recording in [Watch it first](#watch-it-first). `python scripts/record_demo.py` runs it again, then `python scripts/demo_support_desk.py`, and refreshes `docs/demo.cast` and `docs/demo.svg`.
+That command is the first beat of the recording in [Watch it first](#watch-it-first). `python scripts/record_demo.py` runs it again, then `python scripts/demo_support_desk.py`, then `python scripts/demo_ops_incident.py`, and refreshes `docs/demo.cast` and `docs/demo.svg`.
 
 What the script sets for you (only if the variable is unset):
 
