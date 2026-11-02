@@ -10,6 +10,8 @@
 
 **Latest release: [v0.1.1](https://github.com/jahonn/ProAgent-OS/releases/tag/v0.1.1).** [Release notes](docs/RELEASE_NOTES_v0.1.1.md) · [GitHub Releases](https://github.com/jahonn/ProAgent-OS/releases) · [CHANGELOG](CHANGELOG.md) `[0.1.1]`.
 
+Ready-to-paste announcement: [docs/ANNOUNCE_v0.1.1.md](docs/ANNOUNCE_v0.1.1.md).
+
 **Two offline demos** after the [quick start](#quick-start-mock-llm) install (mock LLM, no API key):
 
 ```bash
