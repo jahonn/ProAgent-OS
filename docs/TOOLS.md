@@ -43,4 +43,4 @@ Default `PROAGENT_LLM_PROVIDER=mock` stays offline. Validation never calls a net
 
 - Code: `proagent_os/professional/tools/{base,validation,builtins}.py`
 - Architecture map: [ARCHITECTURE.md](ARCHITECTURE.md)
-- HITL pause path: [ARCHITECTURE.md](ARCHITECTURE.md#task-run-hitl-pause--resume-stub)
+- HITL pause/resume path: [ARCHITECTURE.md](ARCHITECTURE.md#task-run-hitl-pause--resume-mid-loop-continue)

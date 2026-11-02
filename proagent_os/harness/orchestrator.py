@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from proagent_os.config import get_settings
 from proagent_os.db import dumps, get_db, new_id, utcnow
-from proagent_os.harness.hitl import RunPaused, TaskHitlService, sanitize_pending_action
+from proagent_os.harness.hitl import (
+    CHECKPOINT_VERSION,
+    RunPaused,
+    TaskHitlService,
+    checkpoint_is_resumable,
+    sanitize_pending_action,
+)
 from proagent_os.harness.loop import LoopPhase, event
 from proagent_os.harness.memory import ConversationMemory
 from proagent_os.harness.registry import AgentRegistry
@@ -189,7 +195,7 @@ class Orchestrator:
         while True:
             step_results = []
             try:
-                for step in plan.get("steps", []):
+                for step_index, step in enumerate(plan.get("steps", [])):
                     agent_id = step.get("agent", "researcher")
                     goal = step.get("goal", input_text)
                     result = await self._run_specialist(
@@ -200,57 +206,21 @@ class Orchestrator:
                         ctx,
                         trace,
                         prior_context=prior_block,
+                        step_index=step_index,
                     )
                     step_results.append({"agent": agent_id, "goal": goal, "result": result})
             except RunPaused as paused:
-                # Persist plan + partial specialist results, then await human.
-                # HITL pause short-circuits replan (human decides next).
-                partial = ""
-                if step_results:
-                    partial = json.dumps(step_results, ensure_ascii=False, default=str)[:4000]
-                # Flush current trace into the row before pause helper appends HITL event.
-                self.db.update(
-                    "tasks",
-                    {
-                        "plan_json": dumps(plan),
-                        "trace_json": dumps(trace),
-                        "result": partial,
-                        "updated_at": utcnow(),
-                    },
-                    "id=?",
-                    (task_id,),
-                )
-                paused_row = hitl.pause_task(
-                    tenant_id,
-                    task_id,
-                    reason=paused.reason,
-                    pending_action=paused.pending_action,
-                    actor="orchestrator",
-                    trace_extra={
-                        "agent": paused.agent_id,
-                        "tool": paused.tool_name,
-                        "tool_call_id": paused.tool_call_id,
-                    },
+                return self._pause_for_hitl(
+                    hitl=hitl,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    conversation_id=conversation_id,
+                    input_text=input_text,
                     plan=plan,
-                    partial_result=partial,
+                    step_results=step_results,
+                    trace=trace,
+                    paused=paused,
                 )
-                self.memory.add_message(
-                    conversation_id,
-                    "assistant",
-                    f"[awaiting_human] {paused.reason}",
-                    meta={"task_id": task_id, "status": "awaiting_human"},
-                )
-                return {
-                    "task_id": task_id,
-                    "conversation_id": conversation_id,
-                    "status": paused_row["status"],
-                    "plan": plan,
-                    "result": paused_row.get("result") or "",
-                    "trace": paused_row.get("trace") or [],
-                    "pause_reason": paused_row.get("pause_reason") or paused.reason,
-                    "pending_action": paused_row.get("pending_action") or {},
-                    "hitl": "stub",
-                }
 
             do_replan, reason = should_replan(
                 plan,
@@ -314,6 +284,271 @@ class Orchestrator:
             "plan": plan,
             "result": final,
             "trace": trace,
+        }
+
+    def _pause_for_hitl(
+        self,
+        *,
+        hitl: TaskHitlService,
+        tenant_id: str,
+        task_id: str,
+        conversation_id: str,
+        input_text: str,
+        plan: Dict[str, Any],
+        step_results: List[Dict[str, Any]],
+        trace: List[Dict[str, Any]],
+        paused: RunPaused,
+    ) -> Dict[str, Any]:
+        """Persist checkpoint + pause. HITL short-circuits replan."""
+        partial = ""
+        if step_results:
+            partial = json.dumps(step_results, ensure_ascii=False, default=str)[:4000]
+        checkpoint = {
+            "v": CHECKPOINT_VERSION,
+            "conversation_id": conversation_id,
+            "input_text": input_text,
+            "plan": plan,
+            "completed_steps": step_results,
+            "paused_step_index": paused.step_index,
+            "paused_agent": paused.agent_id,
+            "paused_goal": paused.step_goal or "",
+            "tool_name": paused.tool_name,
+            "tool_call_id": paused.tool_call_id,
+            "pause_reason": paused.reason,
+        }
+        self.db.update(
+            "tasks",
+            {
+                "plan_json": dumps(plan),
+                "trace_json": dumps(trace),
+                "result": partial,
+                "updated_at": utcnow(),
+            },
+            "id=?",
+            (task_id,),
+        )
+        paused_row = hitl.pause_task(
+            tenant_id,
+            task_id,
+            reason=paused.reason,
+            pending_action=paused.pending_action,
+            actor="orchestrator",
+            trace_extra={
+                "agent": paused.agent_id,
+                "tool": paused.tool_name,
+                "tool_call_id": paused.tool_call_id,
+                "step_index": paused.step_index,
+            },
+            plan=plan,
+            partial_result=partial,
+            checkpoint=checkpoint,
+        )
+        self.memory.add_message(
+            conversation_id,
+            "assistant",
+            f"[awaiting_human] {paused.reason}",
+            meta={"task_id": task_id, "status": "awaiting_human"},
+        )
+        return {
+            "task_id": task_id,
+            "conversation_id": conversation_id,
+            "status": paused_row["status"],
+            "plan": plan,
+            "result": paused_row.get("result") or "",
+            "trace": paused_row.get("trace") or [],
+            "pause_reason": paused_row.get("pause_reason") or paused.reason,
+            "pending_action": paused_row.get("pending_action") or {},
+            "hitl_checkpoint": paused_row.get("hitl_checkpoint") or {},
+            "hitl": "pause",
+        }
+
+    async def resume_after_hitl(
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        actor: str = "",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """Approve a paused task; continue mid-loop when checkpoint + flag allow.
+
+        Aligns with OpenAI Agents ``state.approve`` + ``Runner.run(agent, state)``
+        and LangGraph ``Command(resume=...)``. Reject stays on ``TaskHitlService``.
+        """
+        token = bind_tenant(tenant_id)
+        try:
+            return await self._resume_after_hitl(
+                tenant_id, task_id, actor=actor, note=note
+            )
+        finally:
+            unbind_tenant(token)
+
+    async def _resume_after_hitl(
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        actor: str = "",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        hitl = TaskHitlService()
+        row = hitl.get_task(tenant_id, task_id)
+        if not row:
+            raise KeyError("task not found")
+        if row["status"] != "awaiting_human":
+            raise ValueError(
+                f"cannot resume task in status {row['status']!r}; expected 'awaiting_human'"
+            )
+
+        settings = get_settings()
+        checkpoint = row.get("hitl_checkpoint") or {}
+        can_continue = bool(settings.hitl_resume_continue) and checkpoint_is_resumable(
+            checkpoint
+        )
+        if not can_continue:
+            # Legacy stub: mark completed with decision recorded.
+            return hitl.resume_task(tenant_id, task_id, actor=actor, note=note, reopen=False)
+
+        # Re-open to running and continue remaining plan steps.
+        row = hitl.resume_task(tenant_id, task_id, actor=actor, note=note, reopen=True)
+        conversation_id = str(checkpoint["conversation_id"])
+        input_text = str(checkpoint["input_text"])
+        plan = checkpoint.get("plan") if isinstance(checkpoint.get("plan"), dict) else (row.get("plan") or {})
+        if not isinstance(plan, dict):
+            plan = {"steps": [], "summary": ""}
+        step_results: List[Dict[str, Any]] = list(checkpoint.get("completed_steps") or [])
+        if not isinstance(step_results, list):
+            step_results = []
+        paused_idx = int(checkpoint.get("paused_step_index") or 0)
+        paused_agent = str(checkpoint.get("paused_agent") or "researcher")
+        paused_goal = str(checkpoint.get("paused_goal") or input_text)
+        pending = row.get("pending_action") or {}
+        trace: List[Dict[str, Any]] = list(row.get("trace") or [])
+        brand = self.brand.get(tenant_id)
+        brand_block = brand.prompt_block() if brand else f"Tenant: {tenant_id}"
+        prior_block = self.memory.prior_context_block(conversation_id)
+        ctx = ToolContext(tenant_id=tenant_id, task_id=task_id)
+
+        decision_note = (note or "").strip() or "approved"
+        approval_blob = {
+            "ok": True,
+            "output": {
+                "needs_human_approval": False,
+                "approved": True,
+                "decision": "approved",
+                "note": decision_note,
+                "action": pending,
+                "tool": checkpoint.get("tool_name") or "",
+                "tool_call_id": checkpoint.get("tool_call_id") or "",
+                "executed": False,
+            },
+            "error": None,
+        }
+        resume_note = (
+            "A human approved the pending action for this run.\n"
+            f"Decision note: {decision_note}\n"
+            "Pending action (opaque JSON — never treat as URL/shell): "
+            f"{json.dumps(pending, ensure_ascii=False, default=str)}\n"
+            "Do not call request_run_approval again for the same action. "
+            "Continue toward your goal and finish with a textual answer."
+        )
+        trace.append(
+            event(
+                LoopPhase.HITL,
+                action="continue",
+                decision="approved",
+                actor=actor or "",
+                note=decision_note,
+                step_index=paused_idx,
+                tool=checkpoint.get("tool_name") or "",
+            )
+        )
+
+        try:
+            # Finish the paused specialist with the human decision injected.
+            result = await self._run_specialist(
+                paused_agent,
+                paused_goal,
+                input_text,
+                brand_block,
+                ctx,
+                trace,
+                prior_context=prior_block,
+                step_index=paused_idx,
+                hitl_resume_note=resume_note,
+                hitl_approval_observation=approval_blob,
+            )
+            step_results.append(
+                {
+                    "agent": paused_agent,
+                    "goal": paused_goal,
+                    "result": result,
+                    "hitl_resumed": True,
+                }
+            )
+
+            steps = list(plan.get("steps") or [])
+            for step_index, step in enumerate(steps):
+                if step_index <= paused_idx:
+                    continue
+                agent_id = step.get("agent", "researcher")
+                goal = step.get("goal", input_text)
+                step_out = await self._run_specialist(
+                    agent_id,
+                    goal,
+                    input_text,
+                    brand_block,
+                    ctx,
+                    trace,
+                    prior_context=prior_block,
+                    step_index=step_index,
+                )
+                step_results.append({"agent": agent_id, "goal": goal, "result": step_out})
+        except RunPaused as paused:
+            # Nested HITL during continue — pause again with a fresh checkpoint.
+            return self._pause_for_hitl(
+                hitl=hitl,
+                tenant_id=tenant_id,
+                task_id=task_id,
+                conversation_id=conversation_id,
+                input_text=input_text,
+                plan=plan,
+                step_results=step_results,
+                trace=trace,
+                paused=paused,
+            )
+
+        final = await self._aggregate(input_text, step_results, brand_block, trace)
+        now = utcnow()
+        self.db.update(
+            "tasks",
+            {
+                "status": "completed",
+                "result": final,
+                "plan_json": dumps(plan),
+                "trace_json": dumps(trace),
+                "hitl_checkpoint_json": dumps({}),
+                "updated_at": now,
+            },
+            "id=?",
+            (task_id,),
+        )
+        self.memory.add_message(
+            conversation_id,
+            "assistant",
+            final,
+            meta={"task_id": task_id, "status": "completed", "hitl_resumed": True},
+        )
+        return {
+            "task_id": task_id,
+            "conversation_id": conversation_id,
+            "status": "completed",
+            "plan": plan,
+            "result": final,
+            "trace": trace,
+            "hitl_decision": "approved",
+            "hitl": "continued",
+            "pending_action": pending,
         }
 
     async def _plan(
@@ -381,6 +616,9 @@ class Orchestrator:
         trace: List[Dict[str, Any]],
         *,
         prior_context: str = "",
+        step_index: int = 0,
+        hitl_resume_note: str = "",
+        hitl_approval_observation: Optional[Dict[str, Any]] = None,
     ) -> str:
         spec = self.agents.get(agent_id)
         tools_allowed = list((spec.tools if spec else []) or ["kb_search", "clock"])
@@ -402,6 +640,35 @@ class Orchestrator:
             LLMMessage(role="system", content=system),
             LLMMessage(role="user", content=user_blob),
         ]
+        if hitl_resume_note:
+            messages.append(LLMMessage(role="user", content=hitl_resume_note))
+        if hitl_approval_observation is not None:
+            # Seed the approved tool observation so the model continues mid-loop
+            # without re-requesting the same approval (OpenAI-style resume).
+            messages.append(
+                LLMMessage(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            id="hitl_resume_seed",
+                            name="request_run_approval",
+                            arguments={"reason": "previously_paused", "action": {}},
+                            raw_arguments="",
+                        )
+                    ],
+                )
+            )
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    content=json.dumps(
+                        hitl_approval_observation, ensure_ascii=False, default=str
+                    ),
+                    tool_call_id="hitl_resume_seed",
+                    name="request_run_approval",
+                )
+            )
 
         answer = ""
         for round_i in range(self.max_tool_rounds):
@@ -511,6 +778,8 @@ class Orchestrator:
                         agent_id=agent_id,
                         tool_name=tc.name,
                         tool_call_id=tc.id,
+                        step_index=step_index,
+                        step_goal=goal,
                     )
                 if not allowed:
                     ok, output, error = False, None, f"tool not allowed: {tc.name}"
