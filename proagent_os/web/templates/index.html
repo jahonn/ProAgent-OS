@@ -43,6 +43,28 @@
           <span class="muted" id="taskStatus"></span>
         </div>
         <pre id="taskTrace" class="mono" style="margin-top:1rem"></pre>
+
+        <div class="hitl-block" id="hitlPanel">
+          <div class="row" style="justify-content:space-between">
+            <h2 style="margin:0">Human in the loop</h2>
+            <div class="row">
+              <button class="btn secondary" type="button" onclick="loadHitlTasks()">Refresh tasks</button>
+              <button class="btn" type="button" onclick="runHitlDemo()">Run mock approval</button>
+            </div>
+          </div>
+          <p class="muted" id="hitlHelp">
+            A task in <span class="status awaiting_human">awaiting_human</span> is waiting on a person.
+            Resume continues the run. Reject cancels it and does not run the gated tool.
+            Resume and Reject are shown when this API key is allowed to decide
+            (tenant operator, <code>recommendation.decide</code>).
+            Each card lists <code>hitl_execute_receipts</code> by tool name and status
+            (<code>started</code>, <code>succeeded</code>, or <code>failed</code>).
+            Raw arguments are not shown.
+          </p>
+          <div class="muted" id="hitlRoleNote"></div>
+          <div class="muted" id="hitlActionStatus"></div>
+          <div id="hitlList" style="margin-top:.8rem"></div>
+        </div>
       </div>
 
       <div id="tab-kb" class="panel hidden">

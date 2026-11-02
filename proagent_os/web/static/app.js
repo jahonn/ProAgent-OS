@@ -7,8 +7,21 @@ function saveKey() {
   localStorage.setItem("proagent_api_key", $("apiKey").value.trim());
   alert("API key saved locally.");
 }
+const TASK_STATUSES = ["awaiting_human", "running", "completed", "cancelled", "failed"];
+const RECEIPT_STATUSES = ["started", "succeeded", "failed"];
+const TRACE_HIDDEN = new Set([
+  "arguments",
+  "args",
+  "args_summary",
+  "raw_arguments",
+  "pending_action",
+  "gated_arguments",
+]);
+
 window.addEventListener("DOMContentLoaded", () => {
   $("apiKey").value = getKey();
+  $("hitlList").addEventListener("submit", onHitlSubmit);
+  if (getKey()) loadHitlTasks();
 });
 
 async function api(path, opts = {}) {
@@ -39,19 +52,64 @@ function appendMsg(role, content) {
   $("chatLog").scrollTop = $("chatLog").scrollHeight;
 }
 
+function statusClass(status, allowed) {
+  return allowed.indexOf(status) >= 0 ? status : "unknown";
+}
+
+function setTaskStatus(status, detail) {
+  const el = $("taskStatus");
+  el.replaceChildren();
+  if (status) {
+    const badge = document.createElement("span");
+    badge.className = `status ${statusClass(status, TASK_STATUSES)}`;
+    badge.textContent = status;
+    el.appendChild(badge);
+    el.appendChild(document.createTextNode(" "));
+  }
+  if (detail) el.appendChild(document.createTextNode(detail));
+}
+
+function redactToolArgs(value) {
+  if (Array.isArray(value)) return value.map(redactToolArgs);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (TRACE_HIDDEN.has(key)) continue;
+      out[key] = redactToolArgs(item);
+    }
+    return out;
+  }
+  return value;
+}
+
 async function runTask() {
   const input = $("taskInput").value.trim();
   if (!input) return;
-  $("taskStatus").textContent = "Running…";
+  setTaskStatus("", "Running…");
   appendMsg("user", input);
   try {
     const data = await api("/tasks", { method: "POST", body: JSON.stringify({ input }) });
-    appendMsg("assistant", data.result || "(empty)");
-    $("taskTrace").textContent = JSON.stringify({ task_id: data.task_id, plan: data.plan, trace: data.trace }, null, 2);
-    $("taskStatus").textContent = `Done (${data.task_id})`;
+    const status = data.status || "completed";
+    if (status === "awaiting_human") {
+      appendMsg("assistant", data.pause_reason || "Waiting for a person.");
+    } else {
+      appendMsg("assistant", data.result || "(empty)");
+    }
+    $("taskTrace").textContent = JSON.stringify(
+      redactToolArgs({ task_id: data.task_id, status, plan: data.plan, trace: data.trace }),
+      null,
+      2
+    );
+    setTaskStatus(status, data.task_id || "");
+    loadHitlTasks();
   } catch (e) {
-    $("taskStatus").textContent = e.message;
+    setTaskStatus("", e.message);
   }
+}
+
+async function runHitlDemo() {
+  $("taskInput").value = "Pause this run for human approval before continuing. proagent-hitl-demo";
+  await runTask();
 }
 
 async function ingestUrl() {
@@ -183,4 +241,129 @@ async function loadDash() {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+}
+
+function safeTaskId(id) {
+  return /^[A-Za-z0-9_-]+$/.test(id) ? id : "";
+}
+
+let hitlCanDecide = false;
+
+async function loadHitlTasks() {
+  const note = $("hitlRoleNote");
+  const root = $("hitlList");
+  if (!getKey()) {
+    hitlCanDecide = false;
+    note.textContent = "Save a tenant API key to load tasks. Resume and Reject need a tenant operator key.";
+    root.innerHTML = "";
+    return;
+  }
+  try {
+    const me = await api("/tenants/me");
+    const role = me.role || "";
+    hitlCanDecide = role === "tenant_operator";
+    if (hitlCanDecide) {
+      note.textContent = "This key can Resume or Reject a task in awaiting_human.";
+    } else if (role === "tenant_readonly") {
+      note.textContent = "This key is tenant_readonly. You can see awaiting_human and receipts. Resume and Reject stay hidden.";
+    } else if (me.is_admin || role === "admin") {
+      note.textContent = "The admin key can read tasks. Resume and Reject need a tenant operator key.";
+    } else {
+      note.textContent = "Resume and Reject are hidden for this key.";
+    }
+  } catch (e) {
+    hitlCanDecide = false;
+    note.textContent = e.message;
+    root.textContent = "";
+    return;
+  }
+  try {
+    const data = await api("/tasks?limit=30");
+    const tasks = Array.isArray(data) ? data.slice() : [];
+    tasks.sort((a, b) => (a.status === "awaiting_human" ? 0 : 1) - (b.status === "awaiting_human" ? 0 : 1));
+    root.innerHTML = "";
+    if (!tasks.length) {
+      root.innerHTML = '<div class="muted">No tasks yet. Run a task, or Run mock approval, to see status here.</div>';
+      return;
+    }
+    tasks.forEach((task) => root.appendChild(renderHitlCard(task)));
+  } catch (e) {
+    root.textContent = e.message;
+  }
+}
+
+function renderHitlCard(task) {
+  const el = document.createElement("div");
+  el.className = "card";
+  const status = String(task.status || "");
+  const id = safeTaskId(String(task.id || ""));
+  const receipts = Array.isArray(task.hitl_execute_receipts) ? task.hitl_execute_receipts : [];
+  const receiptHtml = receipts.length
+    ? receipts.map((receipt) => {
+        const tool = escapeHtml(receipt.tool_name || "tool");
+        const rawStatus = String(receipt.status || "");
+        const shown = escapeHtml(rawStatus || "unknown");
+        return `<div class="hitl-receipt"><span class="mono">${tool}</span> <span class="status ${statusClass(rawStatus, RECEIPT_STATUSES)}">${shown}</span></div>`;
+      }).join("")
+    : '<div class="muted">No execute receipts yet.</div>';
+  const waiting = status === "awaiting_human";
+  const started = receipts.some((receipt) => receipt.status === "started");
+  let form = "";
+  if (waiting && hitlCanDecide && id) {
+    const reexecute = started
+      ? `<label class="muted"><input type="checkbox" name="reexecute" /> Re-run in-flight tool</label>`
+      : "";
+    form = `<form data-task-id="${escapeHtml(id)}">
+      <label>Decision note</label>
+      <input name="note" placeholder="optional" />
+      ${reexecute}
+      <div class="row">
+        <button class="btn ok" type="submit" value="resume">Resume</button>
+        <button class="btn danger" type="submit" value="reject">Reject</button>
+      </div>
+    </form>`;
+  } else if (waiting && !hitlCanDecide) {
+    form = '<div class="muted">Resume and Reject need a tenant operator key.</div>';
+  }
+  const reason = task.pause_reason
+    ? `<div class="muted" style="margin:.35rem 0">${escapeHtml(task.pause_reason)}</div>`
+    : "";
+  const decision = task.hitl_decision
+    ? `<div class="muted">Decision: ${escapeHtml(task.hitl_decision)}</div>`
+    : "";
+  const preview = escapeHtml(String(task.input || "").slice(0, 160));
+  el.innerHTML = `<div class="row" style="justify-content:space-between">
+      <strong class="mono">${escapeHtml(id || task.id || "")}</strong>
+      <span class="status ${statusClass(status, TASK_STATUSES)}">${escapeHtml(status || "unknown")}</span>
+    </div>
+    <div style="margin:.35rem 0">${preview}</div>
+    ${reason}
+    ${decision}
+    <div class="muted">hitl_execute_receipts</div>
+    ${receiptHtml}
+    ${form}`;
+  return el;
+}
+
+async function onHitlSubmit(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  if (!form || !form.getAttribute) return;
+  const id = safeTaskId(form.getAttribute("data-task-id") || "");
+  const action = ev.submitter && ev.submitter.value;
+  if (!id || (action !== "resume" && action !== "reject")) return;
+  const noteInput = form.elements.note;
+  const note = noteInput ? String(noteInput.value || "").trim() : "";
+  const body = { note };
+  if (action === "resume" && form.elements.reexecute && form.elements.reexecute.checked) {
+    body.reexecute = true;
+  }
+  $("hitlActionStatus").textContent = action === "resume" ? "Resuming…" : "Rejecting…";
+  try {
+    await api(`/tasks/${id}/${action}`, { method: "POST", body: JSON.stringify(body) });
+    $("hitlActionStatus").textContent = "";
+    await loadHitlTasks();
+  } catch (e) {
+    $("hitlActionStatus").textContent = e.message;
+  }
 }

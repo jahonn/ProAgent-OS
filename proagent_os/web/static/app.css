@@ -71,9 +71,14 @@ pre, .mono { font-family: var(--mono); font-size: .82rem; white-space: pre-wrap;
 }
 .muted { color: #9aacd0; }
 .status { display:inline-block; padding:.15rem .45rem; border-radius:999px; font-size:.75rem; border:1px solid var(--border); }
-.status.pending { color: #ffd166; }
-.status.approved, .status.executed { color: var(--ok); }
-.status.rejected { color: var(--danger); }
+.status.pending, .status.awaiting_human, .status.started { color: #ffd166; }
+.status.approved, .status.executed, .status.completed, .status.succeeded { color: var(--ok); }
+.status.rejected, .status.cancelled, .status.failed { color: var(--danger); }
+.status.running { color: #7eb6ff; }
+.status.unknown { color: var(--muted); }
+.hitl-block { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.hitl-receipt { display: flex; gap: .45rem; align-items: center; margin-top: .35rem; }
+.hitl-block form .btn { margin-top: .45rem; }
 #authBar { display:flex; gap:.5rem; align-items:center; }
 #authBar input { width: 260px; }
 .hidden { display:none !important; }

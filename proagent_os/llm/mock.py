@@ -75,6 +75,11 @@ MOCK_JUDGE_FAIL_RATIONALE = (
 )
 _JUDGE_SYSTEM_MARKER = "you are an evaluation judge"
 
+# Console "Run mock approval" includes this token. Other mock prompts ignore it.
+# The planner then asks for one analyst step, and that specialist calls
+# request_run_approval before emit_recommendation. Not a harness change.
+MOCK_HITL_DEMO_MARKER = "proagent-hitl-demo"
+
 
 def _is_compaction_summary_request(messages: List[LLMMessage]) -> bool:
     """True when the call is the session-compaction summarizer, not a planner."""
@@ -172,6 +177,20 @@ class MockLLMProvider(LLMProvider):
         prior_assistant_tool_rounds = sum(1 for m in messages if m.role == "assistant" and m.tool_calls)
 
         if not tools and ("planner" in role_hint or "create a short plan" in joined.lower()):
+            if MOCK_HITL_DEMO_MARKER in joined:
+                content = json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "agent": "analyst",
+                                "goal": "Pause for human approval before continuing",
+                                "tools": ["request_run_approval"],
+                            }
+                        ],
+                        "summary": "Ask a human to approve this run.",
+                    }
+                )
+                return LLMResponse(content=content, model="mock-planner")
             content = json.dumps(
                 {
                     "steps": [
@@ -296,6 +315,24 @@ class MockLLMProvider(LLMProvider):
             )
 
         if kind == "analyst":
+            if (
+                prior_assistant_tool_rounds == 0
+                and "request_run_approval" in tool_names
+                and MOCK_HITL_DEMO_MARKER in joined
+            ):
+                return LLMResponse(
+                    content=None,
+                    model="mock-analyst",
+                    tool_calls=[
+                        _tc(
+                            "request_run_approval",
+                            {
+                                "reason": "Mock demo: confirm before continuing this run",
+                                "action": {"kind": "demo_gate"},
+                            },
+                        )
+                    ],
+                )
             if prior_assistant_tool_rounds == 0 and "emit_recommendation" in tool_names:
                 return LLMResponse(
                     content=None,
