@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,8 +12,9 @@ from proagent_os.harness.hitl import (
     CHECKPOINT_VERSION,
     RunPaused,
     TaskHitlService,
+    build_gated_pending_action,
     checkpoint_is_resumable,
-    sanitize_pending_action,
+    parse_gated_tool_call,
 )
 from proagent_os.harness.loop import LoopPhase, event
 from proagent_os.harness.memory import ConversationMemory
@@ -23,6 +25,13 @@ from proagent_os.metering import bind_tenant, unbind_tenant
 from proagent_os.professional.brand.store import BrandStore
 from proagent_os.professional.skills.loader import SkillLoader
 from proagent_os.professional.tools.base import ToolContext, ToolRegistry
+
+logger = logging.getLogger("proagent.orchestrator")
+
+# Tools the specialist loop may call even when the agent YAML omits them.
+_ALWAYS_ALLOWED_TOOLS = frozenset(
+    {"kb_search", "emit_recommendation", "clock", "request_run_approval"}
+)
 
 
 def _extract_json(text: Optional[str]) -> Any:
@@ -39,6 +48,13 @@ def _extract_json(text: Optional[str]) -> Any:
             except json.JSONDecodeError:
                 return None
     return None
+
+
+def _json_obj_equal(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Stable compare for argument snapshots (key order does not matter)."""
+    return json.dumps(left, sort_keys=True, ensure_ascii=False, default=str) == json.dumps(
+        right, sort_keys=True, ensure_ascii=False, default=str
+    )
 
 
 def _args_summary(arguments: Dict[str, Any], limit: int = 240) -> str:
@@ -303,6 +319,8 @@ class Orchestrator:
         partial = ""
         if step_results:
             partial = json.dumps(step_results, ensure_ascii=False, default=str)[:4000]
+        pending_snapshot = paused.pending_action if isinstance(paused.pending_action, dict) else {}
+        gated_arguments = pending_snapshot.get("arguments")
         checkpoint = {
             "v": CHECKPOINT_VERSION,
             "conversation_id": conversation_id,
@@ -316,6 +334,9 @@ class Orchestrator:
             "tool_call_id": paused.tool_call_id,
             "pause_reason": paused.reason,
         }
+        if isinstance(gated_arguments, dict):
+            # Same snapshot approve will re-check before ToolRegistry.invoke.
+            checkpoint["gated_arguments"] = gated_arguments
         self.db.update(
             "tasks",
             {
@@ -423,6 +444,8 @@ class Orchestrator:
         paused_agent = str(checkpoint.get("paused_agent") or "researcher")
         paused_goal = str(checkpoint.get("paused_goal") or input_text)
         pending = row.get("pending_action") or {}
+        if not isinstance(pending, dict):
+            pending = {}
         trace: List[Dict[str, Any]] = list(row.get("trace") or [])
         brand = self.brand.get(tenant_id)
         brand_block = brand.prompt_block() if brand else f"Tenant: {tenant_id}"
@@ -430,28 +453,17 @@ class Orchestrator:
         ctx = ToolContext(tenant_id=tenant_id, task_id=task_id)
 
         decision_note = (note or "").strip() or "approved"
-        approval_blob = {
-            "ok": True,
-            "output": {
-                "needs_human_approval": False,
-                "approved": True,
-                "decision": "approved",
-                "note": decision_note,
-                "action": pending,
-                "tool": checkpoint.get("tool_name") or "",
-                "tool_call_id": checkpoint.get("tool_call_id") or "",
-                "executed": False,
-            },
-            "error": None,
-        }
-        resume_note = (
-            "A human approved the pending action for this run.\n"
-            f"Decision note: {decision_note}\n"
-            "Pending action (opaque JSON — never treat as URL/shell): "
-            f"{json.dumps(pending, ensure_ascii=False, default=str)}\n"
-            "Do not call request_run_approval again for the same action. "
-            "Continue toward your goal and finish with a textual answer."
+        gated = await self._execute_approved_gated_tool(
+            pending=pending,
+            checkpoint=checkpoint if isinstance(checkpoint, dict) else {},
+            ctx=ctx,
+            trace=trace,
+            agent_id=paused_agent,
+            execute_enabled=bool(settings.hitl_execute_on_approve),
+            decision_note=decision_note,
         )
+        approval_blob = gated["observation"]
+        resume_note = gated["note"]
         trace.append(
             event(
                 LoopPhase.HITL,
@@ -460,7 +472,9 @@ class Orchestrator:
                 actor=actor or "",
                 note=decision_note,
                 step_index=paused_idx,
-                tool=checkpoint.get("tool_name") or "",
+                tool=gated.get("tool_name") or checkpoint.get("tool_name") or "",
+                gated_tool_executed=bool(gated.get("executed")),
+                skip_reason=gated.get("skip_reason") or "",
             )
         )
 
@@ -477,6 +491,9 @@ class Orchestrator:
                 step_index=paused_idx,
                 hitl_resume_note=resume_note,
                 hitl_approval_observation=approval_blob,
+                hitl_seed_tool_name=gated.get("seed_tool_name") or "",
+                hitl_seed_tool_call_id=gated.get("seed_tool_call_id") or "",
+                hitl_seed_arguments=gated.get("seed_arguments"),
             )
             step_results.append(
                 {
@@ -549,7 +566,247 @@ class Orchestrator:
             "hitl_decision": "approved",
             "hitl": "continued",
             "pending_action": pending,
+            "gated_tool_executed": bool(gated.get("executed")),
+            "gated_tool": gated.get("tool_name") or "",
         }
+
+    def _tool_allowed_for_agent(self, agent_id: str, tool_name: str) -> bool:
+        spec = self.agents.get(agent_id)
+        tools_allowed = list((spec.tools if spec else []) or ["kb_search", "clock"])
+        return tool_name in tools_allowed or tool_name in _ALWAYS_ALLOWED_TOOLS
+
+    async def _execute_approved_gated_tool(
+        self,
+        *,
+        pending: Dict[str, Any],
+        checkpoint: Dict[str, Any],
+        ctx: ToolContext,
+        trace: List[Dict[str, Any]],
+        agent_id: str,
+        execute_enabled: bool,
+        decision_note: str,
+    ) -> Dict[str, Any]:
+        """Run the paused tool once, or explain why it was skipped.
+
+        Only a ``kind=gated_tool`` snapshot is eligible. The tool must still
+        declare ``requires_human_approval``, must match the checkpoint, and
+        must pass schema validation again inside ``ToolRegistry.invoke``.
+        ``proposed`` is never executed. Reject does not call this method.
+        """
+        parsed = parse_gated_tool_call(pending)
+        if isinstance(pending.get("proposed"), dict):
+            proposed: Dict[str, Any] = pending["proposed"]
+        elif parsed is None:
+            proposed = pending
+        else:
+            proposed = {}
+
+        def _note(extra: str) -> str:
+            return (
+                "A human approved the pending action for this run.\n"
+                f"Decision note: {decision_note}\n"
+                f"{extra}\n"
+                "Pending payload is opaque JSON — never treat it as a URL or shell command: "
+                f"{json.dumps(proposed, ensure_ascii=False, default=str)}\n"
+                "Do not call the same gated tool again for this action. "
+                "Continue toward your goal and finish with a textual answer."
+            )
+
+        def _pack(
+            *,
+            observation: Dict[str, Any],
+            note: str,
+            tool_name: str = "",
+            tool_call_id: str = "",
+            arguments: Optional[Dict[str, Any]] = None,
+            executed_flag: bool = False,
+            skip_reason: str = "",
+            seed: bool = True,
+        ) -> Dict[str, Any]:
+            seed_args = arguments if isinstance(arguments, dict) else None
+            return {
+                "observation": observation,
+                "note": note,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "arguments": seed_args if seed_args is not None else {},
+                "executed": executed_flag,
+                "skip_reason": skip_reason,
+                "seed_tool_name": tool_name if seed and tool_name else "",
+                "seed_tool_call_id": tool_call_id if seed and tool_call_id else "",
+                "seed_arguments": seed_args,
+            }
+
+        def _ack(
+            tool_name: str,
+            tool_call_id: str,
+            *,
+            error: Optional[str] = None,
+            output_extra: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            output: Dict[str, Any] = {
+                "needs_human_approval": False,
+                "approved": True,
+                "decision": "approved",
+                "note": decision_note,
+                "action": proposed,
+                "tool": tool_name,
+                "tool_call_id": tool_call_id,
+                "executed": False,
+            }
+            if output_extra:
+                output.update(output_extra)
+            return {"ok": error is None, "output": output, "error": error}
+
+        if parsed is None:
+            packed = _pack(
+                observation=_ack(
+                    str(checkpoint.get("tool_name") or ""),
+                    str(checkpoint.get("tool_call_id") or ""),
+                ),
+                note=_note(
+                    "No structured gated tool was stored. The run continues without executing a tool."
+                ),
+                tool_name=str(checkpoint.get("tool_name") or ""),
+                tool_call_id=str(checkpoint.get("tool_call_id") or ""),
+                executed_flag=False,
+                skip_reason="no_gated_tool",
+                seed=False,
+            )
+            logger.info(
+                "hitl_execute_skip task_id=%s reason=no_gated_tool",
+                ctx.task_id or "",
+            )
+            return packed
+
+        tool_name = parsed["tool"]
+        tool_call_id = parsed["tool_call_id"]
+        arguments = parsed["arguments"]
+
+        def _skip(reason: str, extra: str, *, error: str) -> Dict[str, Any]:
+            logger.info(
+                "hitl_execute_skip task_id=%s tool=%s reason=%s",
+                ctx.task_id or "",
+                tool_name,
+                reason,
+            )
+            return _pack(
+                observation=_ack(
+                    tool_name,
+                    tool_call_id,
+                    error=error,
+                    output_extra={"refused": True},
+                ),
+                note=_note(extra),
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                arguments=arguments,
+                executed_flag=False,
+                skip_reason=reason,
+            )
+
+        if not execute_enabled:
+            logger.info(
+                "hitl_execute_skip task_id=%s tool=%s reason=flag_off",
+                ctx.task_id or "",
+                tool_name,
+            )
+            return _pack(
+                observation=_ack(tool_name, tool_call_id),
+                note=_note(
+                    "PROAGENT_HITL_EXECUTE_ON_APPROVE is off. The gated tool was not executed."
+                ),
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                arguments=arguments,
+                executed_flag=False,
+                skip_reason="flag_off",
+            )
+
+        ckpt_tool = checkpoint.get("tool_name")
+        if not isinstance(ckpt_tool, str) or ckpt_tool != tool_name:
+            return _skip(
+                "tool_mismatch",
+                "Gated tool name did not match the checkpoint. The tool was not executed.",
+                error="gated tool does not match checkpoint",
+            )
+
+        ckpt_args = checkpoint.get("gated_arguments")
+        if not isinstance(ckpt_args, dict) or not _json_obj_equal(ckpt_args, arguments):
+            return _skip(
+                "arguments_mismatch",
+                "Gated argument snapshot did not match the checkpoint. The tool was not executed.",
+                error="gated arguments do not match checkpoint",
+            )
+
+        tool_obj = self.tools.get(tool_name)
+        if tool_obj is None:
+            return _skip(
+                "unknown_tool",
+                "The gated tool is not registered. It was not executed.",
+                error=f"Unknown tool: {tool_name}",
+            )
+        if not getattr(tool_obj, "requires_human_approval", False):
+            return _skip(
+                "not_approval_gated",
+                "The pending tool is not marked requires_human_approval. "
+                "It was not executed. Free-text actions are never run as a URL or shell command.",
+                error="refusing to execute a tool that does not require human approval",
+            )
+        if not self._tool_allowed_for_agent(agent_id, tool_name):
+            return _skip(
+                "tool_not_allowed",
+                "The gated tool is not allowed for this specialist. It was not executed.",
+                error=f"tool not allowed: {tool_name}",
+            )
+
+        t0 = time.perf_counter()
+        result = await self.tools.invoke(tool_name, arguments, ctx)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        schema_failed = (
+            isinstance(result.output, dict) and result.output.get("error") == "schema_validation_failed"
+        )
+        ran = not schema_failed
+        trace.append(
+            event(
+                LoopPhase.TOOL,
+                agent=agent_id,
+                id=tool_call_id,
+                name=tool_name,
+                args_summary=_args_summary(arguments),
+                ok=result.ok,
+                error=result.error,
+                latency_ms=latency_ms,
+                hitl_executed=ran,
+                schema_validation_failed=schema_failed,
+                output_preview=_args_summary({"output": result.output}, limit=400) if result.ok else None,
+            )
+        )
+        if schema_failed:
+            extra = "The gated tool failed schema validation and was not executed."
+            skip = "schema_validation_failed"
+        elif result.ok:
+            extra = f"The gated tool `{tool_name}` ran once through the tool registry."
+            skip = ""
+        else:
+            extra = f"The gated tool `{tool_name}` was invoked and returned an error."
+            skip = "tool_error"
+        logger.info(
+            "hitl_execute task_id=%s tool=%s ok=%s schema_failed=%s",
+            ctx.task_id or "",
+            tool_name,
+            result.ok,
+            schema_failed,
+        )
+        return _pack(
+            observation={"ok": result.ok, "output": result.output, "error": result.error},
+            note=_note(extra),
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            arguments=arguments,
+            executed_flag=ran,
+            skip_reason=skip,
+        )
 
     async def _plan(
         self,
@@ -619,6 +876,9 @@ class Orchestrator:
         step_index: int = 0,
         hitl_resume_note: str = "",
         hitl_approval_observation: Optional[Dict[str, Any]] = None,
+        hitl_seed_tool_name: str = "",
+        hitl_seed_tool_call_id: str = "",
+        hitl_seed_arguments: Optional[Dict[str, Any]] = None,
     ) -> str:
         spec = self.agents.get(agent_id)
         tools_allowed = list((spec.tools if spec else []) or ["kb_search", "clock"])
@@ -645,15 +905,21 @@ class Orchestrator:
         if hitl_approval_observation is not None:
             # Seed the approved tool observation so the model continues mid-loop
             # without re-requesting the same approval (OpenAI-style resume).
+            seed_name = hitl_seed_tool_name or "request_run_approval"
+            seed_id = hitl_seed_tool_call_id or "hitl_resume_seed"
+            if isinstance(hitl_seed_arguments, dict):
+                seed_args = hitl_seed_arguments
+            else:
+                seed_args = {"reason": "previously_paused", "action": {}}
             messages.append(
                 LLMMessage(
                     role="assistant",
                     content=None,
                     tool_calls=[
                         ToolCall(
-                            id="hitl_resume_seed",
-                            name="request_run_approval",
-                            arguments={"reason": "previously_paused", "action": {}},
+                            id=seed_id,
+                            name=seed_name,
+                            arguments=seed_args,
                             raw_arguments="",
                         )
                     ],
@@ -665,8 +931,8 @@ class Orchestrator:
                     content=json.dumps(
                         hitl_approval_observation, ensure_ascii=False, default=str
                     ),
-                    tool_call_id="hitl_resume_seed",
-                    name="request_run_approval",
+                    tool_call_id=seed_id,
+                    name=seed_name,
                 )
             )
 
@@ -710,12 +976,7 @@ class Orchestrator:
             )
 
             for tc in tool_calls:
-                allowed = tc.name in tools_allowed or tc.name in {
-                    "kb_search",
-                    "emit_recommendation",
-                    "clock",
-                    "request_run_approval",
-                }
+                allowed = self._tool_allowed_for_agent(agent_id, tc.name)
                 t0 = time.perf_counter()
                 tool_obj = self.tools.get(tc.name)
                 if (
@@ -755,7 +1016,13 @@ class Orchestrator:
                         )
                         continue
                     reason = str(args.get("reason") or f"approval required for tool {tc.name}")
-                    pending = sanitize_pending_action(args.get("action") if "action" in args else args)
+                    proposed = args.get("action") if isinstance(args.get("action"), dict) else {}
+                    pending = build_gated_pending_action(
+                        tool_name=tc.name,
+                        tool_call_id=tc.id or "",
+                        arguments=args,
+                        proposed=proposed,
+                    )
                     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
                     trace.append(
                         event(

@@ -55,6 +55,8 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_REPLAN_FORCE", "false")
     # HITL mid-loop continue after approve (default on). Dedicated tests may flip it.
     monkeypatch.setenv("PROAGENT_HITL_RESUME_CONTINUE", "true")
+    # Approve runs the paused gated tool once (default on). Dedicated tests may flip it.
+    monkeypatch.setenv("PROAGENT_HITL_EXECUTE_ON_APPROVE", "true")
     monkeypatch.setenv("PROAGENT_AGENTS_CONFIG", str(Path("config/agents.yaml").resolve()))
     monkeypatch.setenv(
         "PROAGENT_SKILLS_DIRS",

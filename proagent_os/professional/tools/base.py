@@ -26,7 +26,10 @@ class Tool(ABC):
     name: str
     description: str
     # When True, the orchestrator pauses the task run (awaiting_human) instead of
-    # invoking ``run``. Arguments are stored as opaque pending_action JSON only.
+    # invoking ``run``. The pause stores a structured pending_action snapshot
+    # (tool name + validated arguments). On approve, that snapshot may be
+    # invoked once through ToolRegistry. Reject never calls ``run``. The
+    # snapshot is not a URL or a shell command.
     requires_human_approval: bool = False
     parameters: Dict[str, Any] = {
         "type": "object",
