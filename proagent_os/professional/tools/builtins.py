@@ -177,8 +177,18 @@ class RequestRunApprovalTool(Tool):
         )
 
 
-def build_builtin_registry() -> ToolRegistry:
-    registry = ToolRegistry()
+def build_builtin_registry(*, strict_schema: bool | None = None) -> ToolRegistry:
+    """Register built-in tools.
+
+    ``strict_schema`` defaults to ``Settings.tool_schema_strict`` (env
+    ``PROAGENT_TOOL_SCHEMA_STRICT``, default True). Pass an explicit bool in
+    tests to avoid reading settings.
+    """
+    if strict_schema is None:
+        from proagent_os.config import get_settings
+
+        strict_schema = bool(get_settings().tool_schema_strict)
+    registry = ToolRegistry(strict_schema=strict_schema)
     for tool in (
         HttpFetchTool(),
         FileReadTool(),

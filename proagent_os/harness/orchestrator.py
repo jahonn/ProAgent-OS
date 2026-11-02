@@ -385,6 +385,36 @@ class Orchestrator:
                     and getattr(tool_obj, "requires_human_approval", False)
                 ):
                     args = tc.arguments if isinstance(tc.arguments, dict) else {}
+                    # Schema-harden before pause so bad args never become pending_action.
+                    schema_check = self.tools.validate(tc.name, args)
+                    if not schema_check.ok:
+                        ok, output, error = False, schema_check.output, schema_check.error
+                        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+                        payload = {"ok": ok, "output": output, "error": error}
+                        messages.append(
+                            LLMMessage(
+                                role="tool",
+                                content=json.dumps(payload, ensure_ascii=False, default=str),
+                                tool_call_id=tc.id,
+                                name=tc.name,
+                            )
+                        )
+                        trace.append(
+                            event(
+                                LoopPhase.TOOL,
+                                agent=agent_id,
+                                round=round_i,
+                                id=tc.id,
+                                name=tc.name,
+                                args_summary=_args_summary(args),
+                                ok=ok,
+                                error=error,
+                                latency_ms=latency_ms,
+                                schema_validation_failed=True,
+                                output_preview=None,
+                            )
+                        )
+                        continue
                     reason = str(args.get("reason") or f"approval required for tool {tc.name}")
                     pending = sanitize_pending_action(args.get("action") if "action" in args else args)
                     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -416,6 +446,9 @@ class Orchestrator:
                     result = await self.tools.invoke(tc.name, tc.arguments or {}, ctx)
                     ok, output, error = result.ok, result.output, result.error
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+                schema_failed = (
+                    isinstance(output, dict) and output.get("error") == "schema_validation_failed"
+                )
 
                 payload = {
                     "ok": ok,
@@ -441,6 +474,7 @@ class Orchestrator:
                         ok=ok,
                         error=error,
                         latency_ms=latency_ms,
+                        schema_validation_failed=schema_failed,
                         output_preview=_args_summary({"output": output}, limit=400) if ok else None,
                     )
                 )

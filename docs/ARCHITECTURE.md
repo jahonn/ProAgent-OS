@@ -131,6 +131,14 @@ flowchart LR
 
 Details and env knobs: [MEMORY.md](MEMORY.md).
 
+
+## Tool schema hardening (stub)
+
+Arguments from the model are checked against each tool's `parameters` JSON schema
+before `Tool.run` (OpenAI FunctionTool / Anthropic tool_use). Failures become
+specialist observations with `schema_validation_failed`; the tool does not execute.
+Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
+
 ## Stub vs planned
 
 | Shipped now | Planned (not in this cut) |
@@ -141,6 +149,7 @@ Details and env knobs: [MEMORY.md](MEMORY.md).
 | Docs mapping to platform patterns | Guardrail interrupts mid-tool-batch with policy engines |
 | Task-run HITL pause/resume stub (`awaiting_human`) | Mid-run continue after approve; dedicated task audit |
 | Session / conversation compaction stub (`summary` + keep last N) | LLM summarizer, tiktoken budgets, per-tenant limits |
+| Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
 | Existing OTel + usage metering stubs | Full LangSmith/ADK-style judges |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)
@@ -151,8 +160,8 @@ for fixture layout and matching rules.
 - `proagent_os/harness/orchestrator.py` — outer + inner loops
 - `proagent_os/harness/loop.py` — phases and trajectory helpers
 - `proagent_os/eval/` — golden-task loader + trajectory compare stub
-- `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format
+- `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format + arg validation
 - `proagent_os/harness/hitl.py` — task-run pause / resume / reject stub
 - `proagent_os/harness/memory.py` / `compaction.py` — conversation store + session compaction stub
 - `proagent_os/proactive/` — monitors, recommendations, executors
-- `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/MEMORY.md`, `docs/VERTICAL_SKILL.md`
+- `docs/AUTH.md`, `docs/DATABASE.md`, `docs/DEMO.md`, `docs/EVAL.md`, `docs/MEMORY.md`, `docs/TOOLS.md`, `docs/VERTICAL_SKILL.md`

@@ -84,7 +84,7 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 
 ## Architecture
 
-Harness loop phases, industry mapping, task-run HITL pause/resume stub, session/context compaction stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md).
+Harness loop phases, industry mapping, task-run HITL pause/resume stub, session/context compaction stub, tool schema hardening, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md). Tool JSON-schema validation: [docs/TOOLS.md](docs/TOOLS.md).
 
 Planner and aggregator stay text-only. Specialists call tools natively, for up to `PROAGENT_MAX_TOOL_ROUNDS` rounds (JSON-in-content is still accepted).
 
@@ -177,6 +177,7 @@ docker compose up --build
 | `PROAGENT_LLM_API_KEY` | empty | Bearer token; empty → mock fallback |
 | `PROAGENT_LLM_MODEL` | `gpt-4o-mini` | Model id |
 | `PROAGENT_MAX_TOOL_ROUNDS` | `8` | Max tool rounds per specialist |
+| `PROAGENT_TOOL_SCHEMA_STRICT` | `true` | Validate tool args against JSON schema before execute ([TOOLS.md](docs/TOOLS.md)) |
 | `PROAGENT_EXECUTOR_MODE` | `noop` | `off`, `noop`, or `webhook` |
 | `PROAGENT_EXECUTOR_ON_APPROVE` | `true` | Run the executor as part of approve when mode is not `off` |
 | `PROAGENT_EXECUTOR_WEBHOOK_URL` | empty | Absolute http(s) URL. Required for `webhook`. This is the only request target |
@@ -301,7 +302,7 @@ proagent-os/
 ├── verticals/example/       # Minimal vertical pattern
 ├── verticals/support_desk/  # Support desk pack (policies, triage, demo)
 ├── scripts/demo.py · demo_live.py · demo_support_desk.py · record_demo.py
-├── docs/DATABASE.md · DEMO.md · EVAL.md · MEMORY.md · VERTICAL_SKILL.md · demo.cast · demo.svg
+├── docs/DATABASE.md · DEMO.md · EVAL.md · MEMORY.md · TOOLS.md · VERTICAL_SKILL.md · demo.cast · demo.svg
 ├── tests/
 └── docker-compose.yml
 ```
