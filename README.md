@@ -390,6 +390,8 @@ Commercial-readiness work and the path toward a more discoverable project are tr
 
 Published: first public GitHub Release **[v0.1.1](https://github.com/jahonn/ProAgent-OS/releases/tag/v0.1.1)** — [release notes](docs/RELEASE_NOTES_v0.1.1.md), [CHANGELOG](CHANGELOG.md) `[0.1.1]`.
 
+PyPI is not published. Metadata, a manual build-and-check workflow, and the owner upload checklist are in [docs/PYPI.md](docs/PYPI.md). Roadmap [issue #2](https://github.com/jahonn/ProAgent-OS/issues/2) item P3 stays open until the owner approves an upload.
+
 Known gaps in this tree:
 
 - sqlite-vec is an optional `vec0` index (`PROAGENT_KB_VECTOR_STORE=sqlite_vec`, extra `vec`). It is not HNSW, and one KNN query returns at most 4096 neighbors. pgvector is not wired. Default search remains BM25. The default vector store remains the offline blob plus Python cosine. Remote embeddings are available with `PROAGENT_KB_EMBED_BACKEND=openai`.
