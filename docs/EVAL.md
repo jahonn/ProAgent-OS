@@ -113,11 +113,31 @@ Example fixture fields:
 
 ## Metering
 
-`maybe_record_eval_metering` is a **no-write stub**. `USAGE_KINDS` does not yet
-include `eval_run`, so nothing is inserted into `usage_events`. The hook returns
-`{recorded: false, billing: stub, …}` for forward wiring. The `passed` value it
-echoes is the reported score (judge verdict when `judge_mode=llm`, otherwise
-the trajectory result).
+When a golden eval finishes, `maybe_record_eval_metering` appends one
+`usage_events` row with `kind=eval_run`. **Quantity is the number of cases
+evaluated in that call**, not a flat 1 for a multi-case batch and not a
+pass/fail score.
+
+`run_golden_task` (the helper the mock CI tests call) evaluates **one** case.
+It passes `cases=1`, so the row’s `quantity` is 1. Pass and fail both count:
+the case was evaluated. A second finish appends another row. `GET /api/v1/usage`
+sums `quantity` per tenant and kind, so the `eval_run` total is the number of
+cases evaluated for that tenant. `events` is the number of finished calls.
+
+A caller that finishes several cases in one call passes `cases` set to that
+count. The single row then stores the case count (for example `cases=3` stores
+`quantity=3`). Do not also leave `record_metering` on for each inner
+`run_golden_task`, or those cases are counted twice.
+
+`record_metering=False` skips the insert. No `tenant_id` inserts nothing and
+the hook returns `None`. The row does not store the task id or the score. The
+`metering` field on `EvalResult` echoes them: `{recorded: true, kind: "eval_run",
+quantity, billing: "stub", task_id, passed, …}`. `passed` there is the reported
+score (judge verdict when `judge_mode=llm`, otherwise the trajectory result).
+
+Tenant scoping matches the other usage kinds. A tenant bearer sees only its
+rows. The admin key sees every tenant, or one tenant when `tenant_id` is set.
+The payload stays `billing: stub`. There is no payment provider and no charge.
 
 ## Stub vs planned
 
@@ -126,8 +146,8 @@ the trajectory result).
 | JSON golden fixtures + ordered-subset matcher | Exact match / ADK criterion scores |
 | Mock Orchestrator pytest path | Live LangSmith datasets / complex-agent eval |
 | Optional LLM judge (`PROAGENT_EVAL_JUDGE=llm`) with ordered-subset fallback | Multi-criterion rubrics, numeric scores, hosted eval |
-| Structured `EvalResult` report | `eval_run` usage kind + dashboards |
-| Metering hook (no DB write) | Session compaction of long eval traces |
+| Structured `EvalResult` report | Hosted eval dashboards |
+| `eval_run` usage kind (quantity = cases evaluated; `billing: stub`) | Session compaction of long eval traces |
 
 ## Industry references
 

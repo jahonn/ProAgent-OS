@@ -262,7 +262,10 @@ stays the offline ordered-subset matcher so CI does not call a model.
 the expected tools, actual tools, and final answer, and stores
 `passed` + `judge_rationale` on `EvalResult`. A raised call or unparseable
 completion keeps the matcher result and sets `judge_mode=ordered_subset_fallback`.
-The mock provider returns deterministic JSON. Details: [EVAL.md](EVAL.md).
+The mock provider returns deterministic JSON. A finished golden case appends
+one `usage_events` row, `kind=eval_run`, with `quantity` equal to the number of
+cases in that call (`run_golden_task` passes 1). `GET /api/v1/usage` sums that
+quantity per tenant. The response stays `billing: stub`. Details: [EVAL.md](EVAL.md).
 
 ## Stub vs planned
 
@@ -276,7 +279,7 @@ The mock provider returns deterministic JSON. Details: [EVAL.md](EVAL.md).
 | Session / conversation compaction stub (`summary` + keep last N; optional LLM summarizer flag, default extractive) | Dedicated compaction model, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
 | Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |
-| Existing OTel + usage metering stubs | Hosted LangSmith/ADK eval runs and dashboards |
+| OTel stub plus usage metering, including golden `eval_run` (quantity = cases evaluated) | Hosted LangSmith/ADK eval runs and dashboards |
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline and green. See [EVAL.md](EVAL.md)
 for fixture layout and matching rules.

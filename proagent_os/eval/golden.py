@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from proagent_os.harness.loop import summarize_run, tool_trajectory
+from proagent_os.metering import BILLING_STUB, record_usage
 
 # Default directory used by pytest when no path is passed.
 DEFAULT_FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "eval"
@@ -189,22 +190,32 @@ def maybe_record_eval_metering(
     *,
     task_id: str,
     passed: bool,
+    cases: int = 1,
 ) -> Optional[Dict[str, Any]]:
-    """Optional metering hook.
+    """Append one ``eval_run`` usage row when a golden eval finishes.
 
-    ``USAGE_KINDS`` does not yet include an eval kind, so this stub returns a
-    descriptive dict and does **not** call ``record_usage``. Wiring a real
-    ``eval_run`` kind later is intentional follow-up work.
+    ``quantity`` is the number of cases evaluated in this call (``cases``).
+    :func:`run_golden_task` evaluates one case and passes ``cases=1``. A caller
+    that finishes several cases in one call passes that count so the row stores
+    the case count, not a flat 1 for the whole batch. Pass and fail both count.
+    The usage aggregate sums ``quantity``, so the tenant total is the number of
+    cases. No ``tenant_id`` inserts nothing. This is the billing stub: no charge.
     """
     if not tenant_id:
         return None
+    amount = int(cases)
+    if amount < 1:
+        raise ValueError("cases must be >= 1")
+    row = record_usage(tenant_id, "eval_run", amount)
     return {
-        "recorded": False,
-        "reason": "eval_run kind not in USAGE_KINDS; metering stub only",
+        "recorded": True,
+        "kind": "eval_run",
+        "quantity": amount,
+        "event_id": row["id"],
         "tenant_id": tenant_id,
         "task_id": task_id,
-        "passed": passed,
-        "billing": "stub",
+        "passed": bool(passed),
+        "billing": BILLING_STUB,
     }
 
 
@@ -264,6 +275,11 @@ async def run_golden_task(
     The trajectory check always runs. ``judge`` overrides ``PROAGENT_EVAL_JUDGE``
     when passed (including tests). ``None`` follows the setting, which defaults
     to ordered_subset and does not call a model.
+
+    When ``record_metering`` is true (the default), a finished case appends one
+    ``usage_events`` row with ``kind=eval_run`` and ``quantity=1`` (this helper
+    evaluates one case). Pass and fail both count. ``record_metering=False``
+    skips the insert. See :func:`maybe_record_eval_metering`.
     """
     from proagent_os.db import get_db, new_id, utcnow
     from proagent_os.services import get_services
@@ -314,6 +330,6 @@ async def run_golden_task(
         )
     if record_metering:
         eval_result.metering = maybe_record_eval_metering(
-            tid, task_id=golden.id, passed=eval_result.passed
+            tid, task_id=golden.id, passed=eval_result.passed, cases=1
         )
     return eval_result
