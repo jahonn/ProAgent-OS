@@ -250,7 +250,7 @@ Usage events are rows in `usage_events` (migration `0003_usage_events`): `tenant
 
 ## Retrieval modes
 
-Search defaults to offline BM25. That path does not write embeddings and does not call an embeddings API. CI runs this path with `PROAGENT_LLM_PROVIDER=mock` and `PROAGENT_KB_EMBED_BACKEND=stub`.
+Search defaults to offline BM25. That path does not write embeddings and does not call an embeddings API. CI runs this path with `PROAGENT_LLM_PROVIDER=mock` and `PROAGENT_KB_EMBED_BACKEND=stub`. See [Knowledge base embeddings](docs/KB_EMBEDDINGS.md) for OpenAI-compatible setup, the optional sqlite-vec index, and reindexing.
 
 | Mode | Behavior |
 |------|----------|
