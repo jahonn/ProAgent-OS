@@ -193,6 +193,75 @@ def test_invalid_mcp_server_json_keeps_builtins(monkeypatch: pytest.MonkeyPatch)
         registry.close()
 
 
+def test_env_key_with_equals_skips_that_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Popen rejects '=' in an env key. Skip that server; keep the next one."""
+    marker = tmp_path / "spawned"
+    monkeypatch.setenv("PROAGENT_MCP_ENABLED", "true")
+    monkeypatch.setenv("PROAGENT_MCP_CALL_TIMEOUT_S", "5")
+    monkeypatch.setenv(
+        "PROAGENT_MCP_SERVERS",
+        json.dumps(
+            [
+                {
+                    "name": "badenv",
+                    "command": sys.executable,
+                    "args": ["-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('x')"],
+                    "env": {"BAD=KEY": "1"},
+                },
+                _fake_server(),
+            ]
+        ),
+    )
+    get_settings.cache_clear()
+    registry = build_tool_registry()
+    try:
+        assert registry.get("mcp_fake_ping") is not None
+        assert registry.get("mcp_badenv_ping") is None
+        assert not marker.exists()
+    finally:
+        registry.close()
+
+
+def test_env_value_may_contain_equals() -> None:
+    from proagent_os.professional.tools.mcp_client import parse_mcp_server_specs
+
+    specs = parse_mcp_server_specs(
+        json.dumps(
+            [
+                {
+                    "name": "local",
+                    "command": sys.executable,
+                    "args": ["server.py"],
+                    "env": {"MARK": "a=b"},
+                }
+            ]
+        )
+    )
+    assert len(specs) == 1
+    assert specs[0].env == {"MARK": "a=b"}
+
+
+def test_spawn_illegal_env_key_is_client_error() -> None:
+    from proagent_os.professional.tools.mcp_client import McpClientError, McpServerSpec, McpStdioSession
+
+    session = McpStdioSession(
+        McpServerSpec(
+            name="bad",
+            command=sys.executable,
+            args=["-c", "raise SystemExit(0)"],
+            env={"A=B": "1"},
+        ),
+        timeout_s=2,
+    )
+    try:
+        with pytest.raises(McpClientError):
+            session.start()
+    finally:
+        session.close()
+
+
 def test_registry_tool_name_sanitizes() -> None:
     from proagent_os.professional.tools.mcp_client import registry_tool_name
 

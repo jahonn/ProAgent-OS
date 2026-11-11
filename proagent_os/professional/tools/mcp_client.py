@@ -146,7 +146,10 @@ def _parse_env(name: str, raw: Any) -> Optional[Dict[str, str]]:
         return None
     env: Dict[str, str] = {}
     for key, value in raw.items():
-        if not isinstance(key, str) or not key or "\x00" in key or not isinstance(value, str) or "\x00" in value:
+        if not isinstance(key, str) or not key or "\x00" in key or "=" in key:
+            logger.warning("MCP server %s env key is not usable; skipping the server", name)
+            return None
+        if not isinstance(value, str) or "\x00" in value:
             logger.warning("MCP server %s env has a non-string entry; skipping the server", name)
             return None
         env[key] = value
@@ -241,7 +244,8 @@ class McpStdioSession:
                 start_new_session=True,
                 shell=False,
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError: Popen rejects an env key that contains '='.
             raise McpClientError(f"failed to start MCP server {self.spec.name!r}: {exc}") from exc
 
     def _initialize(self) -> None:

@@ -92,7 +92,7 @@ Server object (stdio only):
 | `name` | yes | Short label. The registry name is `mcp_{name}_{tool}` after non-alphanumeric characters become `_` |
 | `command` | yes | Executable path. Passed as argv, never through a shell |
 | `args` | no | String list. Not split on spaces |
-| `env` | no | String keys and values merged onto the child environment. Not logged. Not a secret store |
+| `env` | no | String keys and values merged onto the child environment. A key that contains `=` skips that server (it does not stop the process). Values may contain `=`. Not logged. Not a secret store |
 | `cwd` | no | Working directory for the child |
 | `transport` | no | Only `stdio` (the default). `http` or anything else is skipped and does not open a socket |
 
