@@ -73,8 +73,52 @@ tool that sets `requires_human_approval` uses the same pause → approve → one
 
 Default `PROAGENT_LLM_PROVIDER=mock` stays offline. Validation never calls a network.
 
+## MCP client (stdio, opt-in)
+
+A thin client for [Model Context Protocol](https://modelcontextprotocol.io) stdio servers. It is **off by default**. Mock demos and CI do not import the adapter and do not start a subprocess. This is not an MCP host, not a marketplace, and not a per-tenant sandbox.
+
+When `PROAGENT_MCP_ENABLED=true`, `build_tool_registry` (used by `AppServices`) parses `PROAGENT_MCP_SERVERS` and, for each usable entry, spawns the process, sends `initialize` plus `notifications/initialized`, and calls `tools/list`. Each advertised tool becomes a normal `Tool` on the existing `ToolRegistry`. The specialist loop is unchanged: the model sees `openai_tools` for names the agent lists, and `ToolRegistry.invoke` validates arguments before `tools/call`.
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `PROAGENT_MCP_ENABLED` | `false` | `true` imports the adapter and starts configured stdio servers. `false` ignores `PROAGENT_MCP_SERVERS` |
+| `PROAGENT_MCP_SERVERS` | empty | JSON array of server objects. Ignored when the flag is off. At most 8 entries are used |
+| `PROAGENT_MCP_CALL_TIMEOUT_S` | `15` | Per JSON-RPC read timeout, in seconds (max 120). A timeout or a dead process skips that server at startup, or returns an observation on a later call |
+
+Server object (stdio only):
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Short label. The registry name is `mcp_{name}_{tool}` after non-alphanumeric characters become `_` |
+| `command` | yes | Executable path. Passed as argv, never through a shell |
+| `args` | no | String list. Not split on spaces |
+| `env` | no | String keys and values merged onto the child environment. Not logged. Not a secret store |
+| `cwd` | no | Working directory for the child |
+| `transport` | no | Only `stdio` (the default). `http` or anything else is skipped and does not open a socket |
+
+Example (local process, no network):
+
+```bash
+export PROAGENT_MCP_ENABLED=true
+export PROAGENT_MCP_SERVERS='[{"name":"notes","command":"python","args":["server.py"]}]'
+```
+
+A specialist only sees the tool when its agent `tools:` list includes the registry name (for example `mcp_notes_search`). MCP tools are not added to the always-allowed set (`kb_search`, `clock`, `emit_recommendation`, `request_run_approval`). Names that collide with a tool already on the registry are skipped. Names longer than 64 characters are skipped.
+
+`tools/call` observations are `{text, content}` from MCP text blocks, capped. Non-text blocks are omitted (`omitted: true`). `isError: true` is `ok: false`. Remote tools do not set `requires_human_approval`.
+
+Sessions are process-wide. Every tenant whose agent lists the tool shares that subprocess. The child inherits the API process environment. Shut down stops the processes (`registry.close()` from the API lifespan, the worker, and `reset_services`). There is no reconnect and no `tools/listChanged` refresh.
+
+Wire protocol is newline-delimited JSON-RPC, `initialize` protocol version `2024-11-05`. Server stderr is discarded.
+
+| Shipped | Not in this cut |
+| --- | --- |
+| Stdio client, `tools/list`, `tools/call`, registry prefix, schema check before the call | Streamable HTTP, SSE, resources, prompts, sampling, roots, OAuth, live tool-list refresh, per-tool approval, per-tenant processes |
+
+`tests/fixtures/mcp_fake_server.py` is a local stub for pytest. It is not a product server.
+
 ## Related
 
-- Code: `proagent_os/professional/tools/{base,validation,builtins}.py`
+- Code: `proagent_os/professional/tools/{base,validation,builtins,mcp_client}.py`
 - Architecture map: [ARCHITECTURE.md](ARCHITECTURE.md)
 - HITL pause/resume path: [ARCHITECTURE.md](ARCHITECTURE.md#task-run-hitl-pause--resume-mid-loop-continue)

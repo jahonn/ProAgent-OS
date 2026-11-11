@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # See docs/TOOLS.md.
     tool_schema_strict: bool = True
 
+    # Opt-in MCP stdio client. Default off: the adapter module is not imported,
+    # no subprocess is started, and mock CI is unchanged. When enabled,
+    # PROAGENT_MCP_SERVERS is a JSON array of local stdio servers. Discovered
+    # tools are registered on ToolRegistry as mcp_{server}_{tool}. Streamable
+    # HTTP is not implemented. See docs/TOOLS.md.
+    mcp_enabled: bool = False
+    mcp_servers: str = ""
+    mcp_call_timeout_s: float = Field(default=15.0, gt=0, le=120)
+
     # Outer plan-and-replan loop (stub). Default off = zero behavior change vs
     # prior releases. When enabled, after specialist steps, heuristic triggers
     # (empty plan, empty/failed step results) may call the planner again with

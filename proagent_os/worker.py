@@ -25,6 +25,11 @@ def main() -> None:
     try:
         asyncio.run(run_worker_forever(poll_seconds=15))
     finally:
+        if get_services.cache_info().currsize:
+            try:
+                get_services().tools.close()
+            except Exception:
+                logging.getLogger("proagent.worker").exception("tool registry close failed")
         shutdown_observability()
 
 

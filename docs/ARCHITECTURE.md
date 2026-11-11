@@ -254,6 +254,17 @@ before `Tool.run` (OpenAI FunctionTool / Anthropic tool_use). Failures become
 specialist observations with `schema_validation_failed`; the tool does not execute.
 Knob: `PROAGENT_TOOL_SCHEMA_STRICT` (default on). Details: [TOOLS.md](TOOLS.md).
 
+## MCP stdio client (opt-in)
+
+`PROAGENT_MCP_ENABLED` defaults to **false**. The adapter module is not imported
+and no MCP process starts, so the mock path is unchanged. When the flag is on,
+configured stdio servers are started at registry build and their tools are
+registered on the same `ToolRegistry` as `mcp_{server}_{tool}`. The specialist
+loop calls them through `ToolRegistry.invoke` (schema check, then `tools/call`).
+A specialist sees a remote tool only if its YAML `tools:` list names it.
+Sessions are process-wide, not per tenant. Streamable HTTP is not implemented.
+Details: [TOOLS.md](TOOLS.md).
+
 ## Golden-task judge (optional)
 
 LangSmith and ADK can score a trajectory with an LLM judge. ProAgent’s default
@@ -278,6 +289,7 @@ quantity per tenant. The response stays `billing: stub`. Details: [EVAL.md](EVAL
 | Task-run HITL mid-loop resume, execute-on-approve, recover of `running` + a finished execute receipt (no second invoke), and a safe receipt summary on `GET /api/v1/tasks` and `GET /api/v1/tasks/{id}` | Full tool-call replay; dedicated `task.decide` permission; approval that survives later calls; cross-process fence while the original continue is still alive |
 | Session / conversation compaction stub (`summary` + keep last N; optional LLM summarizer flag, default extractive) | Dedicated compaction model, tiktoken budgets, per-tenant limits |
 | Tool JSON-schema validation before execute (`PROAGENT_TOOL_SCHEMA_STRICT`) | Pydantic models / OpenAI strict mode / per-tool timeout+approval |
+| Opt-in MCP stdio client (`PROAGENT_MCP_ENABLED` default off) registers remote tools on `ToolRegistry` | Streamable HTTP, resources/prompts/sampling, OAuth, `tools/listChanged`, per-tenant or per-tool approval |
 | Plan-and-replan outer loop stub (`PROAGENT_REPLAN_*`, default off) | LLM sufficiency judge, DAG replan, cost budgets |
 | OTel stub plus usage metering, including golden `eval_run` (quantity = cases evaluated) | Hosted LangSmith/ADK eval runs and dashboards |
 
@@ -289,7 +301,7 @@ for fixture layout and matching rules.
 - `proagent_os/harness/orchestrator.py` — outer + inner loops
 - `proagent_os/harness/loop.py` — phases and trajectory helpers
 - `proagent_os/eval/` — golden-task loader, ordered-subset compare, optional LLM judge
-- `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format + arg validation
+- `proagent_os/professional/tools/` — JSON-schema tools / OpenAI function wire format + arg validation; opt-in MCP stdio client in `mcp_client.py`
 - `proagent_os/harness/hitl.py` — task-run pause / resume (mid-loop continue) / reject
 - `proagent_os/harness/memory.py` / `compaction.py` — conversation store + session compaction stub
 - `proagent_os/proactive/` — monitors, recommendations, executors

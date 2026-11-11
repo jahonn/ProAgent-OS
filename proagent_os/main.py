@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,6 +27,11 @@ async def lifespan(_app: FastAPI):
     get_db()
     get_services()
     yield
+    if get_services.cache_info().currsize:
+        try:
+            get_services().tools.close()
+        except Exception:
+            logging.getLogger("proagent").exception("tool registry close failed")
     shutdown_observability()
 
 

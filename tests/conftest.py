@@ -41,6 +41,10 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_REQUESTS", "10000")
     monkeypatch.setenv("PROAGENT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    # MCP stdio adapter stays off so pytest does not import it or spawn a server.
+    monkeypatch.setenv("PROAGENT_MCP_ENABLED", "false")
+    monkeypatch.setenv("PROAGENT_MCP_SERVERS", "")
+    monkeypatch.setenv("PROAGENT_MCP_CALL_TIMEOUT_S", "15")
     # Tracing stays off so pytest does not import opentelemetry.
     monkeypatch.setenv("PROAGENT_OTEL_ENABLED", "false")
     monkeypatch.setenv("PROAGENT_OTEL_EXPORTER", "none")
@@ -79,7 +83,7 @@ def _isolate_db(tmp_path, monkeypatch):
     from proagent_os.llm.factory import reset_llm_cache
     from proagent_os.observability import reset_observability
     from proagent_os.oidc import reset_token_verifier
-    from proagent_os.services import reset_services
+    from proagent_os.services import get_services, reset_services
 
     get_settings.cache_clear()
     reset_token_verifier()
@@ -91,6 +95,11 @@ def _isolate_db(tmp_path, monkeypatch):
 
     reset_rate_limiter()
     yield
+    if get_services.cache_info().currsize:
+        try:
+            get_services().tools.close()
+        except Exception:
+            pass
     reset_token_verifier()
     get_settings.cache_clear()
     reset_llm_cache()
