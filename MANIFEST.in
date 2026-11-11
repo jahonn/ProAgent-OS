@@ -1,6 +1,13 @@
+include LICENSE README.md CHANGELOG.md CONTRIBUTING.md requirements.txt pyproject.toml
+recursive-include proagent_os *.py
 recursive-include proagent_os/web *
 recursive-include config *
 recursive-include skills *
 recursive-include fixtures *
 recursive-include verticals *
-include LICENSE README.md requirements.txt
+recursive-include docs *.md *.svg *.cast
+recursive-include tests *.py *.json
+global-exclude *.py[cod]
+global-exclude __pycache__
+prune data
+prune .github
