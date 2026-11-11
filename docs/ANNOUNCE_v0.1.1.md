@@ -34,6 +34,6 @@ How the loop is shaped, including what is still a stub: [docs/ARCHITECTURE.md](h
 
 - Production SaaS. This cut is for demos, vertical-pack scaffolding, and self-hosted experiments. Read the [roadmap (issue #2)](https://github.com/jahonn/ProAgent-OS/issues/2) before any production SaaS use.
 - A hosted product. You run the FastAPI app and worker yourself. SQLite stays a single-writer file.
-- An action runner. Approve can run a local noop or one configured webhook. It does not run arbitrary action code.
+- An action runner. Recommendation inbox approve runs a local noop or one configured webhook. The action payload is not treated as a URL or shell command, and it does not run arbitrary action code. Task-run HITL resume is a separate path: `POST /api/v1/tasks/{id}/resume` can invoke a registered `requires_human_approval` tool once when `PROAGENT_HITL_EXECUTE_ON_APPROVE` is on (the default).
 
 Human notes for the cut: [docs/RELEASE_NOTES_v0.1.1.md](https://github.com/jahonn/ProAgent-OS/blob/main/docs/RELEASE_NOTES_v0.1.1.md). Demo output to expect: [docs/DEMO.md](https://github.com/jahonn/ProAgent-OS/blob/main/docs/DEMO.md).
