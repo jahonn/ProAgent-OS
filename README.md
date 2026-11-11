@@ -101,7 +101,7 @@ ProAgent OS is a runnable product harness: private KB, proactive human-in-the-lo
 
 ## Architecture
 
-Harness loop phases, industry mapping, task-run HITL mid-loop resume, session/context compaction stub, tool schema hardening, plan-and-replan outer loop stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` / `replan` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md). Tool JSON-schema validation: [docs/TOOLS.md](docs/TOOLS.md).
+Harness loop phases, industry mapping, task-run HITL mid-loop resume, session/context compaction stub, tool schema hardening, plan-and-replan outer loop stub, and stub vs planned eval hooks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (`LoopPhase` / `tool_trajectory` / `hitl` / `compaction` / `replan` in `proagent_os/harness/`). Golden-task / ordered-subset trajectory CI stub: [docs/EVAL.md](docs/EVAL.md). Conversation compaction knobs: [docs/MEMORY.md](docs/MEMORY.md). Tool JSON-schema validation and the opt-in MCP stdio client (`PROAGENT_MCP_ENABLED`, default off): [docs/TOOLS.md](docs/TOOLS.md).
 
 Planner and aggregator stay text-only. Specialists call tools natively, for up to `PROAGENT_MAX_TOOL_ROUNDS` rounds (JSON-in-content is still accepted).
 
@@ -135,6 +135,8 @@ flowchart TB
 ```
 
 **Built-in tools:** `http_fetch` · `file_read` · `kb_search` · `clock` · `emit_recommendation` · `request_run_approval`
+
+MCP stdio tools stay off unless `PROAGENT_MCP_ENABLED=true`. Discovered tools join the same registry as `mcp_{server}_{tool}` and run only when a specialist lists that name. The default mock path does not start a server. See [docs/TOOLS.md](docs/TOOLS.md).
 
 **Core agents:** `planner` · `researcher` · `analyst` · `aggregator` (plus agents merged from `verticals/*/agents/`)
 
@@ -196,6 +198,9 @@ docker compose up --build
 | `PROAGENT_LLM_MODEL` | `gpt-4o-mini` | Model id |
 | `PROAGENT_MAX_TOOL_ROUNDS` | `8` | Max tool rounds per specialist |
 | `PROAGENT_TOOL_SCHEMA_STRICT` | `true` | Validate tool args against JSON schema before execute ([TOOLS.md](docs/TOOLS.md)) |
+| `PROAGENT_MCP_ENABLED` | `false` | Opt-in MCP stdio client. `false` does not import the adapter or start a process ([TOOLS.md](docs/TOOLS.md)) |
+| `PROAGENT_MCP_SERVERS` | empty | JSON array of stdio servers. Ignored when MCP is off |
+| `PROAGENT_MCP_CALL_TIMEOUT_S` | `15` | Per MCP JSON-RPC read timeout in seconds |
 | `PROAGENT_REPLAN_ENABLED` | `false` | Outer plan-and-replan stub; default off = zero behavior change ([ARCHITECTURE.md](docs/ARCHITECTURE.md)) |
 | `PROAGENT_REPLAN_MAX` | `1` | Max replan cycles per task when enabled |
 | `PROAGENT_REPLAN_FORCE` | `false` | Fixture/demo only: force replan while under max |

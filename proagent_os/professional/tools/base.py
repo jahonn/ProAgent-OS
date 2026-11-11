@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
+
+logger = logging.getLogger("proagent.tools")
 
 from proagent_os.professional.tools.validation import validate_tool_call
 
@@ -65,9 +68,25 @@ class ToolRegistry:
         # When True, invoke validates arguments against the tool's JSON schema
         # before run (OpenAI FunctionTool / Anthropic tool_use style).
         self.strict_schema = strict_schema
+        # Optional shutdown hooks (MCP stdio sessions). Empty for builtins.
+        self._closers: List[Callable[[], None]] = []
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+
+    def add_closer(self, fn: Callable[[], None]) -> None:
+        """Register a shutdown hook. Used by the opt-in MCP stdio adapter."""
+        self._closers.append(fn)
+
+    def close(self) -> None:
+        """Run shutdown hooks once. A no-op when nothing was attached."""
+        closers = self._closers
+        self._closers = []
+        for fn in closers:
+            try:
+                fn()
+            except Exception:
+                logger.exception("tool registry closer failed")
 
     def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)

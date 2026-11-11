@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from proagent_os.harness.registry import AgentRegistry
 from proagent_os.llm.factory import get_llm
 from proagent_os.professional.kb.store import KnowledgeBase
 from proagent_os.professional.skills.loader import SkillLoader
-from proagent_os.professional.tools.builtins import build_builtin_registry
+from proagent_os.professional.tools.builtins import build_tool_registry
 from proagent_os.proactive.monitors import MonitorService
 from proagent_os.proactive.recommendations import RecommendationService
 from proagent_os.profitable.learning import LearningLoop
@@ -25,7 +26,7 @@ class AppServices:
         # Same discovery for every pack under verticals/*/agents/agents.yaml
         # (example, ops_incident, support_desk, and later packs). Cwd is the repo root.
         self.agents.merge_tree(Path("verticals"))
-        self.tools = build_builtin_registry()
+        self.tools = build_tool_registry()
         self.skills = SkillLoader(settings.skills_dir_list)
         self.llm = get_llm()
         self.orchestrator = Orchestrator(self.llm, self.agents, self.tools, self.skills)
@@ -43,5 +44,10 @@ def get_services() -> AppServices:
 
 
 def reset_services() -> AppServices:
+    if get_services.cache_info().currsize:
+        try:
+            get_services().tools.close()
+        except Exception:
+            logging.getLogger("proagent.services").exception("failed to close tool registry")
     get_services.cache_clear()
     return get_services()

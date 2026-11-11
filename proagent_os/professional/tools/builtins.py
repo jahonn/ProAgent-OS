@@ -206,3 +206,21 @@ def build_builtin_registry(*, strict_schema: bool | None = None) -> ToolRegistry
     ):
         registry.register(tool)
     return registry
+
+
+def build_tool_registry(*, strict_schema: bool | None = None) -> ToolRegistry:
+    """Built-in tools, plus MCP stdio tools when ``PROAGENT_MCP_ENABLED`` is set.
+
+    The MCP adapter is imported only when the flag is on. Default off does not
+    start a subprocess. Call ``registry.close()`` on shutdown to stop sessions.
+    """
+    registry = build_builtin_registry(strict_schema=strict_schema)
+    from proagent_os.config import get_settings
+
+    settings = get_settings()
+    if not settings.mcp_enabled:
+        return registry
+    from proagent_os.professional.tools.mcp_client import attach_mcp_servers
+
+    attach_mcp_servers(registry, settings)
+    return registry
